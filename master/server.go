@@ -24,7 +24,7 @@ import (
 )
 
 var (
-	hostname   = flag.String("hostname", "", "The server's hostname")
+	hostname   = flag.String("hostname", "localhost", "The server's hostname")
 	port       = flag.Int("port", 7899, "The server port")
 	zk_servers = strings.Fields(*flag.String("zk-servers", "localhost:2181",
 		"Zookeeper server cluster, separated by space"))
@@ -71,6 +71,7 @@ func (s *MasterServer) GetWorker(ctx context.Context, key *pb.Key) (*pb.GetWorke
 			ret = v
 			break
 		}
+		log.Printf("Responding %s:%d\n", ret.Hostname, ret.Port)
 		return &pb.GetWorkerResponse{
 			Status: pb.Status_OK,
 			Worker: &pb.Worker{
@@ -172,6 +173,7 @@ func setupCloseHandler() {
 		log.Println("Ctrl-C captured.")
 		log.Println("Sending stop to watch loop...")
 		stopChan <- struct{}{}
+		log.Println("Stop sent")
 		if server != nil {
 			log.Println("Gracefully stopping gRPC server...")
 			server.GracefulStop()
@@ -186,13 +188,13 @@ func setupCloseHandler() {
 func main() {
 	// parse flag
 	flag.Parse()
-	if len(*hostname) == 0 {
-		n, err := os.Hostname()
-		if err != nil {
-			log.Fatalf("Cannot get default hostname. Try to specify it in command line.")
-		}
-		hostname = &n
-	}
+	//if len(*hostname) == 0 {
+	//	n, err := os.Hostname()
+	//	if err != nil {
+	//		log.Fatalf("Cannot get default hostname. Try to specify it in command line.")
+	//	}
+	//	hostname = &n
+	//}
 
 	// set up graceful handler for ctrl-c
 	setupCloseHandler()

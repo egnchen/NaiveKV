@@ -14,13 +14,12 @@ import (
 	"google.golang.org/grpc"
 	"log"
 	"net"
-	"os"
 	"strings"
 	"sync"
 )
 
 var (
-	hostname   = flag.String("hostname", "", "The server's hostname")
+	hostname   = flag.String("hostname", "localhost", "The server's hostname")
 	port       = flag.Int("port", 7900, "The server port")
 	zk_servers = strings.Fields(*flag.String("zk-servers", "localhost:2181",
 		"Zookeeper server cluster, separated by space"))
@@ -30,7 +29,7 @@ var (
 
 var (
 	conn   *zk.Conn
-	data   map[string]string
+	data   map[string]string = make(map[string]string)
 	rwlock sync.RWMutex
 )
 
@@ -59,7 +58,7 @@ func (s *WorkerServer) Put(_ context.Context, pair *pb.KVPair) (*pb.PutResponse,
 func (s *WorkerServer) Get(_ context.Context, key *pb.Key) (*pb.GetResponse, error) {
 	rwlock.RLock()
 	value, ok := data[key.Key]
-	rwlock.Unlock()
+	rwlock.RUnlock()
 	if ok {
 		return &pb.GetResponse{
 			Status: pb.Status_OK,
@@ -118,20 +117,20 @@ func runGrpcServer() (*grpc.Server, error) {
 	grpcServer := grpc.NewServer(opts...)
 	pb.RegisterKVWorkerServer(grpcServer, getWorkerServer())
 
-	log.Println("Worker: Starting gRPC server...")
+	log.Println("Worker: Starting gRPC server @ ...")
 	grpcServer.Serve(listener)
 	return grpcServer, nil
 }
 
 func main() {
 	flag.Parse()
-	if len(*hostname) == 0 {
-		n, err := os.Hostname()
-		if err != nil {
-			log.Fatalf("Cannot get default hostname. Try to specify it in command line.")
-		}
-		hostname = &n
-	}
+	//if len(*hostname) == 0 {
+	//	n, err := os.Hostname()
+	//	if err != nil {
+	//		log.Fatalf("Cannot get default hostname. Try to specify it in command line.")
+	//	}
+	//	hostname = &n
+	//}
 	// by default we bind to an arbitrary port
 	// this behavior could be changed under environment like docker
 
