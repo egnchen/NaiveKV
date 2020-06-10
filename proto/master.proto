@@ -2,19 +2,22 @@
 // @author Eugene Chen cyj205@sjtu.edu.cn
 
 syntax = "proto3";
+
+package kv.proto;
 option go_package = "proto";
 
-package proto;
+import "common.proto";
 
 service KVMaster {
-  rpc GetWorker(Key) returns (Worker) {}
+  rpc GetWorker(Key) returns (GetWorkerResponse) {}
+}
+
+message GetWorkerResponse {
+  Status status = 1;
+  Worker worker = 2;
 }
 
 message Worker {
   string hostname = 1;
   int32 port = 2;
-}
-
-message Key {
-  string key = 1;
 }

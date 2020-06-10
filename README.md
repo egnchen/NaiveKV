@@ -7,5 +7,6 @@ This is a distributed key-value service implemented in Go.
 ### Compile protobuf
 
 ```bash
-protoc proto/master.proto --go_out=plugins=grpc:.
+cd proto
+protoc *.proto --go_out=plugins=grpc:.
 ```

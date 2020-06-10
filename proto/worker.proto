@@ -1,0 +1,28 @@
+// gRPC service for KV data retrieval & modification
+// @author Eugene Chen cyj205@sjtu.edu.cn
+
+syntax = "proto3";
+
+package kv.proto;
+option go_package = "proto";
+
+import "common.proto";
+
+service KVWorker {
+  rpc put(KVPair) returns (PutResponse) {}
+  rpc get(Key) returns (GetResponse) {}
+  rpc delete(Key) returns (DeleteResponse) {}
+}
+
+message PutResponse {
+  Status status = 1;
+}
+
+message GetResponse {
+  Status status = 1;
+  string value = 2;
+}
+
+message DeleteResponse {
+  Status status = 1;
+}

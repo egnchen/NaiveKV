@@ -16,174 +16,141 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
-
 var (
-	hostname	= flag.String("hostname", "", "The server's hostname")
-	port		= flag.Int("port", 7978, "The server port")
-	zk_servers	= strings.Fields(*flag.String("zk-servers", "localhost:2181",
+	hostname   = flag.String("hostname", "", "The server's hostname")
+	port       = flag.Int("port", 7899, "The server port")
+	zk_servers = strings.Fields(*flag.String("zk-servers", "localhost:2181",
 		"Zookeeper server cluster, separated by space"))
-	zk_node_root= "/kv/nodes"
-	zk_node_name= "master"
+	zk_node_root = "/kv/nodes"
+	zk_node_name = "master"
 )
 
+var (
+	masters  map[string]common.Node
+	workers  map[string]common.Node
+	rwlock   sync.RWMutex
+	conn     *zk.Conn
+	server   *grpc.Server
+	stopChan chan struct{}
+)
+
+type MasterServer struct {
+	pb.UnimplementedKVMasterServer
+}
+
 var _server *MasterServer
+
 func getMasterServer() *MasterServer {
 	if _server == nil {
 		_server = &MasterServer{
 			UnimplementedKVMasterServer: pb.UnimplementedKVMasterServer{},
-			masters:                     make(map[string]common.Node),
-			workers:                     make(map[string]common.Node),
-			mu:                          sync.RWMutex{},
-			conn:                        nil,
 		}
 	}
 	return _server
 }
 
-type MasterServer struct {
-	pb.UnimplementedKVMasterServer
-	masters map[string]common.Node
-	workers map[string]common.Node
-	mu sync.RWMutex
-	conn *zk.Conn
-}
-
 // Assume that we only have one node
 // Return that node
-func (s *MasterServer) GetWorker(ctx context.Context, key *pb.Key) (*pb.Worker, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if len(s.workers) == 0 {
-		var node = pb.Worker{
-			Hostname: "localhost",
-			Port: 1234,
-		}
-		return &node, nil
+func (s *MasterServer) GetWorker(ctx context.Context, key *pb.Key) (*pb.GetWorkerResponse, error) {
+	rwlock.RLock()
+	defer rwlock.RUnlock()
+	if len(workers) == 0 {
+		return &pb.GetWorkerResponse{
+			Status: pb.Status_ENOSERVER,
+		}, nil
 	} else {
 		var ret common.Node
-		for _, v := range s.workers {
+		for _, v := range workers {
 			ret = v
 			break
 		}
-		var node = pb.Worker{
-			Hostname: ret.Hostname,
-			Port: int32(ret.Port),
-		}
-		return &node, nil
+		return &pb.GetWorkerResponse{
+			Status: pb.Status_OK,
+			Worker: &pb.Worker{
+				Hostname: ret.Hostname,
+				Port:     int32(ret.Port),
+			},
+		}, nil
 	}
-}
-
-func connectToZk() (*zk.Conn, error) {
-	log.Println("Connecting to zookeeper cluster...")
-	conn, _, err := zk.Connect(zk_servers, time.Second * 5)
-	return conn, err
-}
-
-func ensurePath(conn *zk.Conn, path string) error {
-	exists, _, err := conn.Exists(path)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		_, err = conn.Create(path, []byte(""), 0, zk.WorldACL(zk.PermAll))
-		if err != nil && err != zk.ErrNodeExists {
-			return err
-		}
-	}
-	return nil
 }
 
 func registerToZk(conn *zk.Conn) error {
 	// ensure root path exist first
-	if err := ensurePath(conn, "/kv"); err != nil {
+	if err := common.EnsurePath(conn, "/kv"); err != nil {
 		return err
 	}
-	if err := ensurePath(conn, "/kv/nodes"); err != nil {
+	if err := common.EnsurePath(conn, "/kv/nodes"); err != nil {
 		return err
 	}
 	nodePath := zk_node_root + "/" + zk_node_name
 	data := common.GetMasterNodeData(*hostname, *port)
 	b, err := json.Marshal(data)
 	if err != nil {
-		log.Fatalln("Master: Failed to marshall into json object.");
+		log.Fatalln("Master: Failed to marshall into json object.")
 	}
-	if _, err = conn.CreateProtectedEphemeralSequential(nodePath, b, zk.WorldACL(zk.PermAll));
-		err != nil {
+	if _, err = conn.CreateProtectedEphemeralSequential(nodePath, b, zk.WorldACL(zk.PermAll)); err != nil {
 		log.Fatalln("Master: Failed to register itself to zookeeper.")
 	}
 	log.Println("Master: Registration complete")
 	return nil
 }
 
-func startWatch(path string, watcher func(ch <-chan zk.Event)) error {
-	conn := getMasterServer().conn
-	children, stat, childCh, err := conn.ChildrenW(path)
-	if err != nil {
-		log.Println(err)
-		return err
-	}
-	log.Printf("Master: Watching path %s\n", path)
-	for idx, ch := range children {
-		log.Printf("chilren: %d, %s\n", idx, ch)
-	}
-	log.Printf("watch children state:\n%s\n", common.ZkStateString(stat))
-	go watcher(childCh)
-	return nil
-
-}
-
-func watchRoot(ch <-chan zk.Event) {
-	server := getMasterServer()
+// Keep watching the given path
+// until a signal is sent from the stopChan channel.
+func watchLoop(path string, stopChan <-chan struct{}) {
+	log.Println("Master: Starting watch loop.")
 	for {
-		event := <-ch
-		log.Println("path:", event.Path)
-		log.Println("type:", event.Type.String())
-		log.Println("state:", event.State.String())
-		if event.Type == zk.EventNodeCreated || event.Type == zk.EventNodeDataChanged {
-			if event.Type == zk.EventNodeCreated {
-				log.Printf("A node has been created: %s\n", event.Path)
-			} else if event.Type == zk.EventNodeDataChanged {
-				log.Printf("A node has been changed: %s\n", event.Path)
-			}
-			ret, _, err := server.conn.Get(event.Path)
-			if err != nil {
-				log.Printf("Error: Failed to retrieve node %s.\n",event.Path)
-			} else {
-				var data common.Node
-				if err := json.Unmarshal(ret, &data); err != nil {
-					log.Printf("Error: Invalid content: %s\n", ret)
-				} else {
-					server.mu.Lock()
-					if data.Type == "master" {
-						server.masters[event.Path] = data
-					} else {
-						server.workers[event.Path] = data
-					}
-					server.mu.Unlock()
-				}
-			}
-		} else if event.Type == zk.EventNodeDeleted {
-			log.Printf("A node has been deleted: %s\n", event.Path)
-			server.mu.Lock()
-			if _, ok := server.masters[event.Path]; ok {
-				delete(server.masters, event.Path)
-			} else if _, ok := server.workers[event.Path]; ok {
-				delete(server.workers, event.Path)
-			} else {
-				fmt.Printf("Error: Cannot find the node(%s) to delete in local metadata.\n", event.Path);
-			}
-			server.mu.Unlock()
+		children, _, eventChan, err := conn.ChildrenW(path)
+		if err != nil {
+			log.Printf("Master: Error occured while listening to %s: %v\n", path, err)
 		}
-		server.mu.Unlock()
+		// update local metadata cache
+		rwlock.Lock()
+		masters = make(map[string]common.Node)
+		workers = make(map[string]common.Node)
+		for _, chName := range children {
+			var data common.Node
+			chPath := path + "/" + chName
+			b, _, err := conn.Get(chPath)
+			if err != nil {
+				log.Printf("Master: Failed to retrieve data for %s", chPath)
+				continue
+			}
+			if err := json.Unmarshal(b, &data); err != nil {
+				log.Printf("Master: Data for %s is invalid: %s", chPath, b)
+				continue
+			}
+			if data.Type == "master" {
+				masters[chPath] = data
+			} else if data.Type == "worker" {
+				workers[chPath] = data
+			} else {
+				log.Printf("Master: Node type is invalid: %s.\n", data.Type)
+			}
+		}
+		rwlock.Unlock()
+		select {
+		case event := <-eventChan:
+			{
+				log.Printf("Received event: %v\n", event)
+			}
+		case <-stopChan:
+			{
+				log.Println("Watch loop exiting...")
+				break
+			}
+		}
 	}
 }
 
-func startGrpcServer() (*grpc.Server, error) {
+func runGrpcServer() (*grpc.Server, error) {
 	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", *port))
 	if err != nil {
 		log.Fatalf("Master: failed to listen to port %d.\n", *port)
@@ -191,9 +158,29 @@ func startGrpcServer() (*grpc.Server, error) {
 	var opts []grpc.ServerOption
 	grpcServer := grpc.NewServer(opts...)
 	pb.RegisterKVMasterServer(grpcServer, getMasterServer())
+	log.Println("Master: Starting gRPC server...")
 	go grpcServer.Serve(listener)
-	log.Println("Master: gRPC server successfully started.")
 	return grpcServer, nil
+}
+
+// handle ctrl-c gracefully
+func setupCloseHandler() {
+	c := make(chan os.Signal)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-c
+		log.Println("Ctrl-C captured.")
+		log.Println("Sending stop to watch loop...")
+		stopChan <- struct{}{}
+		if server != nil {
+			log.Println("Gracefully stopping gRPC server...")
+			server.GracefulStop()
+		}
+		if conn != nil {
+			log.Println("Closing zookeeper connection...")
+			conn.Close()
+		}
+	}()
 }
 
 func main() {
@@ -207,27 +194,39 @@ func main() {
 		hostname = &n
 	}
 
+	// set up graceful handler for ctrl-c
+	setupCloseHandler()
+
 	// connect to zookeeper & register itself
-	conn, err := connectToZk()
+	c, err := common.ConnectToZk(zk_servers)
 	if err != nil {
-		log.Fatalf("Failed to connect to zookeeper cluster: %v", err)
+		log.Fatalf("Failed to connect to zookeeper cluster: %v\n", err)
 	}
-	defer conn.Close()
+	// transfer it to the global variable
+	conn = c
+	defer func() {
+		log.Println("Closing connection with zookeeper...")
+		conn.Close()
+	}()
+	// register itself to zookeeper
 	if err := registerToZk(conn); err != nil {
 		log.Fatalf("Failed to register to zookeeper cluster: %v", err)
 	}
-
-	// save the connection to master server struct
-	getMasterServer().conn = conn
-
-	// start gRPC server
-	if _, err := startGrpcServer(); err != nil {
-		log.Fatalf("Failed to start gRPC server: %v", err)
-	}
-
 	// start watching
-	if err := startWatch(zk_node_root, watchRoot); err != nil {
-		log.Fatalf("Failed to watch path %s\n", zk_node_root);
-	}
+	go watchLoop(zk_node_root, stopChan)
 
+	// run gRPC server
+	server, err = runGrpcServer()
+	if err != nil {
+		log.Fatalf("Failed to run gRPC server: %v", err)
+	}
+	defer func() {
+		log.Println("Gracefully exiting gRPC server...")
+		server.GracefulStop()
+	}()
+
+	// May you rest in a deep and restless slumber
+	for {
+		time.Sleep(10 * time.Second)
+	}
 }

@@ -1,0 +1,25 @@
+// common messsage data structure
+// @author Eugene Chen cyj205@sjtu.edu.cn
+
+syntax = "proto3";
+package kv.proto;
+option go_package = "proto";
+
+message Key {
+  string key = 1;
+}
+
+message Value {
+  string value = 1;
+}
+
+message KVPair {
+  string key = 1;
+  string value = 2;
+}
+
+enum Status {
+  OK = 0;
+  ENOENT = 1;
+  ENOSERVER = 2;
+}
