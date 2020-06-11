@@ -11,8 +11,8 @@ import (
 	"github.com/eyeKill/KV/common"
 	pb "github.com/eyeKill/KV/proto"
 	"github.com/samuel/go-zookeeper/zk"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
-	"log"
 	"net"
 	"strings"
 	"sync"
@@ -31,6 +31,7 @@ var (
 	conn   *zk.Conn
 	data   map[string]string = make(map[string]string)
 	rwlock sync.RWMutex
+	log    *zap.Logger
 )
 
 type WorkerServer struct {
@@ -92,37 +93,45 @@ func registerToZk(conn *zk.Conn) error {
 	nodePath := zk_node_root + "/" + zk_node_name
 	exists, _, err := conn.Exists(zk_node_root)
 	if err != nil {
-		log.Fatalln("Worker: Failed to check whether root node exists.")
+		log.Panic("Failed to check whether root node exists.", zap.Error(err))
 	} else if !exists {
-		log.Fatalln("Worker: Root node doesn't exist yet.")
+		log.Panic("Root node does not exist.", zap.Error(err))
 	}
 	data := common.GetWorkerNodeData(*hostname, *port)
 	b, err := json.Marshal(data)
 	if err != nil {
-		log.Fatalln("Worker: Failed to marshall into json object.")
+		log.Panic("Failed to marshall into json object.", zap.Error(err))
 	}
-	if _, err = conn.CreateProtectedEphemeralSequential(nodePath, b, zk.WorldACL(zk.PermAll)); err != nil {
-		log.Fatalln("Worker: Failed to register itself to zookeeper.")
+	name, err := conn.CreateProtectedEphemeralSequential(nodePath, b, zk.WorldACL(zk.PermAll))
+	if err != nil {
+		log.Panic("Failed to register itself to zookeeper.", zap.Error(err))
 	}
-	log.Println("Worker: Registration complete")
+	log.Info("Registration complete.", zap.String("name", name))
 	return nil
 }
 
 func runGrpcServer() (*grpc.Server, error) {
 	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", *port))
 	if err != nil {
-		log.Fatalf("Worker: Failed to listen to port %d.\n", *port)
+		log.Panic("Failed to listen.", zap.Int("port", *port))
 	}
 	var opts []grpc.ServerOption
 	grpcServer := grpc.NewServer(opts...)
 	pb.RegisterKVWorkerServer(grpcServer, getWorkerServer())
 
-	log.Println("Worker: Starting gRPC server @ ...")
+	log.Info("Starting gRPC server...", zap.Int("port", *port))
 	grpcServer.Serve(listener)
 	return grpcServer, nil
 }
 
 func main() {
+	zlog, err := zap.NewDevelopment()
+	if err != nil {
+		fmt.Println("Failed to initialize logger")
+		panic(err)
+	}
+	log = zlog // transfer to global scope
+
 	flag.Parse()
 	//if len(*hostname) == 0 {
 	//	n, err := os.Hostname()
@@ -137,16 +146,18 @@ func main() {
 	// connect to zookeeper & register itself
 	c, err := common.ConnectToZk(zk_servers)
 	if err != nil {
-		log.Fatalf("Failed to connect too zookeeper cluster: %v\n", err)
+		log.Panic("Failed to connect too zookeeper cluster.", zap.Error(err))
 	}
-	conn = c
+	log.Info("Connected to zookeeper cluster.", zap.String("server", c.Server()))
+	conn = c // transfer to global scope
+
 	defer conn.Close()
 	if err := registerToZk(conn); err != nil {
-		log.Fatalf("Failed to register to zookeeper cluster: %v\n", err)
+		log.Panic("Failed to register to zookeeper cluster.", zap.Error(err))
 	}
 
 	// run gRPC server
 	if _, err = runGrpcServer(); err != nil {
-		log.Fatalf("Failed to run gRPC server: %v\n", err)
+		log.Panic("Failed to run gRPC server.", zap.Error(err))
 	}
 }

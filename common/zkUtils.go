@@ -3,7 +3,6 @@ package common
 import (
 	"fmt"
 	"github.com/samuel/go-zookeeper/zk"
-	"log"
 	"time"
 )
 
@@ -17,7 +16,6 @@ func ZkStateString(s *zk.Stat) string {
 }
 
 func ConnectToZk(servers []string) (*zk.Conn, error) {
-	log.Println("Connecting to zookeeper cluster...")
 	conn, _, err := zk.Connect(servers, time.Second*3)
 	return conn, err
 }

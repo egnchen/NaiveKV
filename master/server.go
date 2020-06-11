@@ -12,8 +12,8 @@ import (
 	"github.com/eyeKill/KV/common"
 	pb "github.com/eyeKill/KV/proto"
 	"github.com/samuel/go-zookeeper/zk"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
-	"log"
 	"net"
 	"os"
 	"os/signal"
@@ -33,12 +33,13 @@ var (
 )
 
 var (
+	rwlock   sync.RWMutex
 	masters  map[string]common.Node
 	workers  map[string]common.Node
-	rwlock   sync.RWMutex
 	conn     *zk.Conn
 	server   *grpc.Server
-	stopChan chan struct{}
+	stopChan chan struct{} = make(chan struct{})
+	log      *zap.Logger
 )
 
 type MasterServer struct {
@@ -71,7 +72,6 @@ func (s *MasterServer) GetWorker(ctx context.Context, key *pb.Key) (*pb.GetWorke
 			ret = v
 			break
 		}
-		log.Printf("Responding %s:%d\n", ret.Hostname, ret.Port)
 		return &pb.GetWorkerResponse{
 			Status: pb.Status_OK,
 			Worker: &pb.Worker{
@@ -94,23 +94,23 @@ func registerToZk(conn *zk.Conn) error {
 	data := common.GetMasterNodeData(*hostname, *port)
 	b, err := json.Marshal(data)
 	if err != nil {
-		log.Fatalln("Master: Failed to marshall into json object.")
+		log.Panic("Failed to marshall into json object.", zap.Error(err))
 	}
 	if _, err = conn.CreateProtectedEphemeralSequential(nodePath, b, zk.WorldACL(zk.PermAll)); err != nil {
-		log.Fatalln("Master: Failed to register itself to zookeeper.")
+		log.Panic("Failed to register itself to zookeeper.", zap.Error(err))
 	}
-	log.Println("Master: Registration complete")
 	return nil
 }
 
 // Keep watching the given path
 // until a signal is sent from the stopChan channel.
 func watchLoop(path string, stopChan <-chan struct{}) {
-	log.Println("Master: Starting watch loop.")
+	log.Info("Starting watch loop.")
 	for {
 		children, _, eventChan, err := conn.ChildrenW(path)
 		if err != nil {
-			log.Printf("Master: Error occured while listening to %s: %v\n", path, err)
+			log.Info("Error occured while watching.",
+				zap.String("path", path), zap.Error(err))
 		}
 		// update local metadata cache
 		rwlock.Lock()
@@ -121,11 +121,12 @@ func watchLoop(path string, stopChan <-chan struct{}) {
 			chPath := path + "/" + chName
 			b, _, err := conn.Get(chPath)
 			if err != nil {
-				log.Printf("Master: Failed to retrieve data for %s", chPath)
+				log.Info("Failed to retrieve data.", zap.String("path", chPath))
 				continue
 			}
 			if err := json.Unmarshal(b, &data); err != nil {
-				log.Printf("Master: Data for %s is invalid: %s", chPath, b)
+				log.Info("Got invalid data.",
+					zap.String("path", chPath), zap.ByteString("content", b))
 				continue
 			}
 			if data.Type == "master" {
@@ -133,18 +134,18 @@ func watchLoop(path string, stopChan <-chan struct{}) {
 			} else if data.Type == "worker" {
 				workers[chPath] = data
 			} else {
-				log.Printf("Master: Node type is invalid: %s.\n", data.Type)
+				log.Sugar().Infof("Invalid node type %s", data.Type)
 			}
 		}
 		rwlock.Unlock()
 		select {
 		case event := <-eventChan:
 			{
-				log.Printf("Received event: %v\n", event)
+				log.Info("Received event.", zap.Any("event", event))
 			}
 		case <-stopChan:
 			{
-				log.Println("Watch loop exiting...")
+				log.Info("Stop signal received, exiting watch loop...")
 				break
 			}
 		}
@@ -154,12 +155,13 @@ func watchLoop(path string, stopChan <-chan struct{}) {
 func runGrpcServer() (*grpc.Server, error) {
 	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", *port))
 	if err != nil {
-		log.Fatalf("Master: failed to listen to port %d.\n", *port)
+		log.Panic("failed to listen to port.",
+			zap.Int("port", *port), zap.Error(err))
 	}
 	var opts []grpc.ServerOption
 	grpcServer := grpc.NewServer(opts...)
 	pb.RegisterKVMasterServer(grpcServer, getMasterServer())
-	log.Println("Master: Starting gRPC server...")
+	log.Info("Starting gRPC server...", zap.Int("port", *port))
 	go grpcServer.Serve(listener)
 	return grpcServer, nil
 }
@@ -170,22 +172,30 @@ func setupCloseHandler() {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-c
-		log.Println("Ctrl-C captured.")
-		log.Println("Sending stop to watch loop...")
+		log.Info("Ctrl-C captured.")
+		log.Info("Sending stop to watch loop...")
 		stopChan <- struct{}{}
-		log.Println("Stop sent")
 		if server != nil {
-			log.Println("Gracefully stopping gRPC server...")
+			log.Info("Gracefully stopping gRPC server...")
 			server.GracefulStop()
 		}
 		if conn != nil {
-			log.Println("Closing zookeeper connection...")
+			log.Info("Closing zookeeper connection...")
 			conn.Close()
 		}
+		os.Exit(1)
 	}()
 }
 
 func main() {
+	// initialize logger
+	l, err := zap.NewDevelopment()
+	if err != nil {
+		fmt.Println("Failed to get logger.")
+		return
+	}
+	log = l // transfer to global scope
+
 	// parse flag
 	flag.Parse()
 	//if len(*hostname) == 0 {
@@ -202,28 +212,32 @@ func main() {
 	// connect to zookeeper & register itself
 	c, err := common.ConnectToZk(zk_servers)
 	if err != nil {
-		log.Fatalf("Failed to connect to zookeeper cluster: %v\n", err)
+		log.Panic("Failed to connect to zookeeper.", zap.Error(err))
 	}
+	log.Info("Connected to zookeeper.")
 	// transfer it to the global variable
 	conn = c
 	defer func() {
-		log.Println("Closing connection with zookeeper...")
+		log.Info("Closing connection with zookeeper...")
 		conn.Close()
 	}()
+
 	// register itself to zookeeper
 	if err := registerToZk(conn); err != nil {
-		log.Fatalf("Failed to register to zookeeper cluster: %v", err)
+		log.Panic("Failed to register to zookeeper.", zap.Error(err))
 	}
+	log.Info("Registration complete.")
+
 	// start watching
 	go watchLoop(zk_node_root, stopChan)
 
 	// run gRPC server
 	server, err = runGrpcServer()
 	if err != nil {
-		log.Fatalf("Failed to run gRPC server: %v", err)
+		log.Panic("Failed to run gRPC server.", zap.Error(err))
 	}
 	defer func() {
-		log.Println("Gracefully exiting gRPC server...")
+		log.Info("Gracefully exiting gRPC server...")
 		server.GracefulStop()
 	}()
 
