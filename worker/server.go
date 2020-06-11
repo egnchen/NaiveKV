@@ -14,23 +14,28 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"net"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 )
 
 var (
-	hostname   = flag.String("hostname", "localhost", "The server's hostname")
-	port       = flag.Int("port", 7900, "The server port")
-	zk_servers = strings.Fields(*flag.String("zk-servers", "localhost:2181",
+	hostname  = flag.String("hostname", "localhost", "The server's hostname")
+	port      = flag.Int("port", 7900, "The server port")
+	zkServers = strings.Fields(*flag.String("zk-servers", "localhost:2181",
 		"Zookeeper server cluster, separated by space"))
-	zk_node_root = "/kv/nodes"
-	zk_node_name = "worker"
+	zkNodeRoot = "/kv/nodes"
+	zkNodeName = "worker"
 )
 
 var (
 	conn   *zk.Conn
-	data   map[string]string = make(map[string]string)
 	rwlock sync.RWMutex
+	data   = make(map[string]string)
+	server *grpc.Server
 	log    *zap.Logger
 )
 
@@ -90,8 +95,8 @@ func (s *WorkerServer) Delete(_ context.Context, key *pb.Key) (*pb.DeleteRespons
 func registerToZk(conn *zk.Conn) error {
 	// don't have to ensure that the path exist here
 	// since we're merely a worker
-	nodePath := zk_node_root + "/" + zk_node_name
-	exists, _, err := conn.Exists(zk_node_root)
+	nodePath := zkNodeRoot + "/" + zkNodeName
+	exists, _, err := conn.Exists(zkNodeRoot)
 	if err != nil {
 		log.Panic("Failed to check whether root node exists.", zap.Error(err))
 	} else if !exists {
@@ -120,8 +125,31 @@ func runGrpcServer() (*grpc.Server, error) {
 	pb.RegisterKVWorkerServer(grpcServer, getWorkerServer())
 
 	log.Info("Starting gRPC server...", zap.Int("port", *port))
-	grpcServer.Serve(listener)
+	go func() {
+		if err := grpcServer.Serve(listener); err != nil {
+			log.Info("Error from gRPC server.", zap.Error(err))
+		}
+	}()
 	return grpcServer, nil
+}
+
+// handle ctrl-c gracefully
+func setupCloseHandler() {
+	c := make(chan os.Signal)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-c
+		log.Info("Ctrl-C captured.")
+		if server != nil {
+			log.Info("Gracefully stopping gRPC server...")
+			server.GracefulStop()
+		}
+		if conn != nil {
+			log.Info("Closing zookeeper connection...")
+			conn.Close()
+		}
+		os.Exit(1)
+	}()
 }
 
 func main() {
@@ -131,6 +159,8 @@ func main() {
 		panic(err)
 	}
 	log = zlog // transfer to global scope
+
+	setupCloseHandler()
 
 	flag.Parse()
 	//if len(*hostname) == 0 {
@@ -144,7 +174,7 @@ func main() {
 	// this behavior could be changed under environment like docker
 
 	// connect to zookeeper & register itself
-	c, err := common.ConnectToZk(zk_servers)
+	c, err := common.ConnectToZk(zkServers)
 	if err != nil {
 		log.Panic("Failed to connect too zookeeper cluster.", zap.Error(err))
 	}
@@ -157,7 +187,14 @@ func main() {
 	}
 
 	// run gRPC server
-	if _, err = runGrpcServer(); err != nil {
-		log.Panic("Failed to run gRPC server.", zap.Error(err))
+	s, err := runGrpcServer()
+	if err != nil {
+		log.Panic("Failed to start gRPC server.", zap.Error(err))
+	}
+	server = s // transfer to global scope
+
+	// May you rest in a deep and restless slumber
+	for {
+		time.Sleep(10 * time.Second)
 	}
 }

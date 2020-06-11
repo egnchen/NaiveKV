@@ -24,21 +24,21 @@ import (
 )
 
 var (
-	hostname   = flag.String("hostname", "localhost", "The server's hostname")
-	port       = flag.Int("port", 7899, "The server port")
-	zk_servers = strings.Fields(*flag.String("zk-servers", "localhost:2181",
+	hostname  = flag.String("hostname", "localhost", "The server's hostname")
+	port      = flag.Int("port", 7899, "The server port")
+	zkServers = strings.Fields(*flag.String("zk-servers", "localhost:2181",
 		"Zookeeper server cluster, separated by space"))
-	zk_node_root = "/kv/nodes"
-	zk_node_name = "master"
+	zkNodeRoot = "/kv/nodes"
+	zkNodeName = "master"
 )
 
 var (
 	rwlock   sync.RWMutex
-	masters  map[string]common.Node
-	workers  map[string]common.Node
+	masters  = make(map[string]common.Node)
+	workers  = make(map[string]common.Node)
 	conn     *zk.Conn
 	server   *grpc.Server
-	stopChan chan struct{} = make(chan struct{})
+	stopChan = make(chan struct{})
 	log      *zap.Logger
 )
 
@@ -59,7 +59,7 @@ func getMasterServer() *MasterServer {
 
 // Assume that we only have one node
 // Return that node
-func (s *MasterServer) GetWorker(ctx context.Context, key *pb.Key) (*pb.GetWorkerResponse, error) {
+func (s *MasterServer) GetWorker(_ context.Context, key *pb.Key) (*pb.GetWorkerResponse, error) {
 	rwlock.RLock()
 	defer rwlock.RUnlock()
 	if len(workers) == 0 {
@@ -90,7 +90,7 @@ func registerToZk(conn *zk.Conn) error {
 	if err := common.EnsurePath(conn, "/kv/nodes"); err != nil {
 		return err
 	}
-	nodePath := zk_node_root + "/" + zk_node_name
+	nodePath := zkNodeRoot + "/" + zkNodeName
 	data := common.GetMasterNodeData(*hostname, *port)
 	b, err := json.Marshal(data)
 	if err != nil {
@@ -162,7 +162,11 @@ func runGrpcServer() (*grpc.Server, error) {
 	grpcServer := grpc.NewServer(opts...)
 	pb.RegisterKVMasterServer(grpcServer, getMasterServer())
 	log.Info("Starting gRPC server...", zap.Int("port", *port))
-	go grpcServer.Serve(listener)
+	go func() {
+		if err := grpcServer.Serve(listener); err != nil {
+			log.Info("Error from gRPC server.", zap.Error(err))
+		}
+	}()
 	return grpcServer, nil
 }
 
@@ -210,7 +214,7 @@ func main() {
 	setupCloseHandler()
 
 	// connect to zookeeper & register itself
-	c, err := common.ConnectToZk(zk_servers)
+	c, err := common.ConnectToZk(zkServers)
 	if err != nil {
 		log.Panic("Failed to connect to zookeeper.", zap.Error(err))
 	}
@@ -229,7 +233,7 @@ func main() {
 	log.Info("Registration complete.")
 
 	// start watching
-	go watchLoop(zk_node_root, stopChan)
+	go watchLoop(zkNodeRoot, stopChan)
 
 	// run gRPC server
 	server, err = runGrpcServer()
