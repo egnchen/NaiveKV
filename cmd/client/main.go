@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	pb "github.com/eyeKill/KV/proto"
+	"github.com/golang/protobuf/ptypes/empty"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"os"
@@ -36,13 +37,14 @@ var (
 // collection of grpc clients
 // note that these are interfaces, so no pointers
 var (
-	masterClient  pb.KVMasterClient
-	workerClients map[string]pb.KVWorkerClient = make(map[string]pb.KVWorkerClient)
+	masterClient          pb.KVMasterClient
+	workerClients         map[string]pb.KVWorkerClient         = make(map[string]pb.KVWorkerClient)
+	workerInternalClients map[string]pb.KVWorkerInternalClient = make(map[string]pb.KVWorkerInternalClient)
 )
 
-func getWorkerClient(key string) (pb.KVWorkerClient, error) {
+func getConnectionString(key string) (string, error) {
 	if masterClient == nil {
-		return nil, errors.New("master client not available")
+		return "", errors.New("master client not available")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -51,16 +53,24 @@ func getWorkerClient(key string) (pb.KVWorkerClient, error) {
 	if err != nil {
 		log.Error("Failed to get worker node.",
 			zap.String("key", key), zap.Error(err))
-		return nil, err
+		return "", err
 	}
 	if resp.Status != pb.Status_OK {
 		log.Error("RPC failed.",
 			zap.String("status", pb.Status_name[int32(resp.Status)]), zap.Error(err))
-		return nil, err
+		return "", err
 	}
 	// get client from client pool,
 	// create one if not found.
 	connString := resp.Worker.Hostname + ":" + strconv.Itoa(int(resp.Worker.Port))
+	return connString, nil
+}
+
+func getWorkerClient(key string) (pb.KVWorkerClient, error) {
+	connString, err := getConnectionString(key)
+	if err != nil {
+		return nil, err
+	}
 	ret, ok := workerClients[connString]
 	if !ok {
 		// connect
@@ -78,8 +88,24 @@ func getWorkerClient(key string) (pb.KVWorkerClient, error) {
 		log.Info("Connected.", zap.Any("conn", conn))
 		ret = pb.NewKVWorkerClient(conn)
 		workerClients[connString] = ret
+		// generate client for internal interfaces
+		workerInternalClients[connString] = pb.NewKVWorkerInternalClient(conn)
 	}
 	return ret, nil
+}
+
+func getWorkerInternalClient(key string) (pb.KVWorkerInternalClient, error) {
+	connString, err := getConnectionString(key)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := workerInternalClients[connString]; !ok {
+		// connect first
+		if _, err := getWorkerClient(key); err != nil {
+			return nil, err
+		}
+	}
+	return workerInternalClients[connString], nil
 }
 
 func doPut(key string, value string) error {
@@ -142,6 +168,25 @@ func doDelete(key string) error {
 	}
 }
 
+// flush: for debug only
+func doFlush(key string) error {
+	internalClient, err := getWorkerInternalClient(key)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resp, err := internalClient.Flush(ctx, &empty.Empty{})
+	if err != nil {
+		return err
+	}
+	if resp.Status != pb.Status_OK {
+		return errors.New(pb.Status_name[int32(resp.Status)])
+	} else {
+		return nil
+	}
+}
+
 // main function is a REPL loop
 func main() {
 	// get logger
@@ -165,15 +210,13 @@ func main() {
 	} else {
 		log.Info("Connected.", zap.String("server", *serverAddr))
 	}
-	defer conn.Close()
 	masterClient = pb.NewKVMasterClient(conn)
 
 	// REPL
 	// bufio.Scanner split tokens by '\n' by default
 	scanner := bufio.NewScanner(os.Stdin)
-	for {
-		fmt.Print(">>> ")
-		scanner.Scan()
+	fmt.Print(">>> ")
+	for scanner.Scan() {
 		input := scanner.Text()
 		fields := strings.Fields(input)
 		if len(fields) == 0 {
@@ -217,6 +260,18 @@ func main() {
 					fmt.Println("OK")
 				}
 			}
+		case "flush":
+			{
+				if len(fields) != 2 {
+					fmt.Println("Usage: flush <key>")
+					continue
+				}
+				if err := doFlush(fields[1]); err != nil {
+					fmt.Printf("Flush <%s> failed: %v\n", fields[1], err)
+				} else {
+					fmt.Println("OK")
+				}
+			}
 		case "help":
 			{
 				fmt.Print(HELP_STRING)
@@ -232,6 +287,7 @@ func main() {
 				fmt.Print(HELP_STRING)
 			}
 		}
+		fmt.Print(">>> ")
 	}
 
 }

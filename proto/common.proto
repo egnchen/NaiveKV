@@ -22,4 +22,5 @@ enum Status {
   OK = 0;
   ENOENT = 1;
   ENOSERVER = 2;
+  EFAILED = 3;
 }

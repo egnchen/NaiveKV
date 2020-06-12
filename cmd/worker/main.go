@@ -11,6 +11,7 @@ import (
 	"github.com/eyeKill/KV/common"
 	pb "github.com/eyeKill/KV/proto"
 	"github.com/eyeKill/KV/worker"
+	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/samuel/go-zookeeper/zk"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -25,7 +26,7 @@ import (
 var (
 	hostname  = flag.String("hostname", "localhost", "The server's hostname")
 	port      = flag.Int("port", 7900, "The server port")
-	path      = flag.String("path", "", "Path for persistent log and slot file.")
+	path      = flag.String("path", "data/", "Path for persistent log and slot file.")
 	zkServers = strings.Fields(*flag.String("zk-servers", "localhost:2181",
 		"Zookeeper server cluster, separated by space"))
 	zkNodeRoot = "/kv/nodes"
@@ -43,15 +44,8 @@ type WorkerServer struct {
 	pb.UnimplementedKVWorkerServer
 }
 
-var _worker *WorkerServer
-
-func getWorkerServer() *WorkerServer {
-	if _worker == nil {
-		_worker = &WorkerServer{
-			UnimplementedKVWorkerServer: pb.UnimplementedKVWorkerServer{},
-		}
-	}
-	return _worker
+type WorkerInternalServer struct {
+	pb.UnimplementedKVWorkerInternalServer
 }
 
 func (s *WorkerServer) Put(_ context.Context, pair *pb.KVPair) (*pb.PutResponse, error) {
@@ -83,6 +77,14 @@ func (s *WorkerServer) Delete(_ context.Context, key *pb.Key) (*pb.DeleteRespons
 	}
 }
 
+func (s *WorkerInternalServer) Flush(_ context.Context, _ *empty.Empty) (*pb.FlushResponse, error) {
+	if err := kv.Flush(); err != nil {
+		log.Error("KV flush failed.", zap.Error(err))
+		return &pb.FlushResponse{Status: pb.Status_EFAILED}, nil
+	}
+	return &pb.FlushResponse{Status: pb.Status_OK}, nil
+}
+
 func registerToZk(conn *zk.Conn) error {
 	// don't have to ensure that the path exist here
 	// since we're merely a worker
@@ -106,22 +108,28 @@ func registerToZk(conn *zk.Conn) error {
 	return nil
 }
 
-func runGrpcServer() (*grpc.Server, error) {
-	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", *port))
-	if err != nil {
-		log.Panic("Failed to listen.", zap.Int("port", *port))
+func getGrpcServer() *grpc.Server {
+	if server == nil {
+		var opts []grpc.ServerOption
+		server = grpc.NewServer(opts...)
 	}
-	var opts []grpc.ServerOption
-	grpcServer := grpc.NewServer(opts...)
-	pb.RegisterKVWorkerServer(grpcServer, getWorkerServer())
+	return server
+}
+
+func runGrpcServer(server *grpc.Server) error {
+	address := fmt.Sprintf("localhost:%d", *port)
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return err
+	}
 
 	log.Info("Starting gRPC server...", zap.Int("port", *port))
 	go func() {
-		if err := grpcServer.Serve(listener); err != nil {
+		if err := server.Serve(listener); err != nil {
 			log.Info("Error from gRPC server.", zap.Error(err))
 		}
 	}()
-	return grpcServer, nil
+	return nil
 }
 
 // handle ctrl-c gracefully
@@ -160,7 +168,7 @@ func main() {
 	// this behavior could be changed under environment like docker
 
 	// initialize kv store
-	kvStore, err := worker.NewKVStore("data/")
+	kvStore, err := worker.NewKVStore(*path)
 	if err != nil {
 		log.Panic("Failed to create KVStore object.", zap.Error(err))
 	}
@@ -179,12 +187,13 @@ func main() {
 		log.Panic("Failed to register to zookeeper cluster.", zap.Error(err))
 	}
 
-	// run gRPC server
-	s, err := runGrpcServer()
-	if err != nil {
-		log.Panic("Failed to start gRPC server.", zap.Error(err))
+	// setup gRPC server & run it
+	s := getGrpcServer()
+	pb.RegisterKVWorkerServer(s, &WorkerServer{})
+	pb.RegisterKVWorkerInternalServer(s, &WorkerInternalServer{})
+	if err := runGrpcServer(s); err != nil {
+		log.Panic("Failed to run gRPC server.", zap.Error(err))
 	}
-	server = s // transfer to global scope
 
 	// May you rest in a deep and restless slumber
 	for {
