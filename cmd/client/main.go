@@ -9,16 +9,12 @@ import (
 	"flag"
 	"fmt"
 	pb "github.com/eyeKill/KV/proto"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
-	"log"
 	"os"
 	"strconv"
 	"strings"
 	"time"
-)
-
-var (
-	serverAddr = flag.String("addr", "localhost:7899", "Address of the master")
 )
 
 const HELP_STRING = `Usage:
@@ -26,7 +22,16 @@ put <key> <value>
 get <key>
 delete <key>
 exit
+quit
 `
+
+var (
+	serverAddr = flag.String("addr", "localhost:7899", "Address of the master")
+)
+
+var (
+	log *zap.Logger
+)
 
 // collection of grpc clients
 // note that these are interfaces, so no pointers
@@ -42,14 +47,15 @@ func getWorkerClient(key string) (pb.KVWorkerClient, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	k := pb.Key{Key: key}
-	log.Printf("Getting worker for \"%s\"...\n", key)
 	resp, err := masterClient.GetWorker(ctx, &k)
 	if err != nil {
-		fmt.Printf("Failed to get worker node for %s: %v\n", key, err)
+		log.Error("Failed to get worker node.",
+			zap.String("key", key), zap.Error(err))
 		return nil, err
 	}
 	if resp.Status != pb.Status_OK {
-		fmt.Printf("RPC failed, status = %s\n", pb.Status_name[int32(resp.Status)])
+		log.Error("RPC failed.",
+			zap.String("status", pb.Status_name[int32(resp.Status)]), zap.Error(err))
 		return nil, err
 	}
 	// get client from client pool,
@@ -62,13 +68,14 @@ func getWorkerClient(key string) (pb.KVWorkerClient, error) {
 		opts = append(opts, grpc.WithInsecure())
 		opts = append(opts, grpc.WithBlock())
 
-		log.Printf("Dialing %s...\n", connString)
+		log.Info("Dialing...", zap.String("server", connString))
 		conn, err := grpc.Dial(connString, opts...)
 		if err != nil {
-			log.Fatalf("Failed to dial %s: %v.\n", *serverAddr, err)
+			log.Error("Failed to dail.",
+				zap.String("server", connString), zap.Error(err))
 			return nil, err
 		}
-		log.Printf("Connected to %s\n", connString)
+		log.Info("Connected.", zap.Any("conn", conn))
 		ret = pb.NewKVWorkerClient(conn)
 		workerClients[connString] = ret
 	}
@@ -137,17 +144,26 @@ func doDelete(key string) error {
 
 // main function is a REPL loop
 func main() {
+	// get logger
+	l, err := zap.NewDevelopment()
+	if err != nil {
+		fmt.Println("Failed to get logger.")
+		return
+	}
+	log = l
+
 	flag.Parse()
 	var opts []grpc.DialOption
 	opts = append(opts, grpc.WithInsecure())
 	opts = append(opts, grpc.WithBlock())
 
-	log.Printf("Dialing %s...\n", *serverAddr)
+	log.Info("Dialing...", zap.String("server", *serverAddr))
 	conn, err := grpc.Dial(*serverAddr, opts...)
 	if err != nil {
-		log.Fatalf("Failed to dial %s: %v.\n", *serverAddr, err)
+		log.Panic("Failed to dial.",
+			zap.String("server", *serverAddr), zap.Error(err))
 	} else {
-		log.Printf("Connected to %s\n", *serverAddr)
+		log.Info("Connected.", zap.String("server", *serverAddr))
 	}
 	defer conn.Close()
 	masterClient = pb.NewKVMasterClient(conn)
@@ -160,6 +176,9 @@ func main() {
 		scanner.Scan()
 		input := scanner.Text()
 		fields := strings.Fields(input)
+		if len(fields) == 0 {
+			break
+		}
 		switch fields[0] {
 		case "put":
 			{
@@ -202,9 +221,15 @@ func main() {
 			{
 				fmt.Print(HELP_STRING)
 			}
-		case "exit":
+		case "exit", "quit":
 			{
-				break
+				fmt.Println("Goodbye")
+				return
+			}
+		default:
+			{
+				fmt.Printf("Illegal op \"%s\"\n", fields[0])
+				fmt.Print(HELP_STRING)
 			}
 		}
 	}

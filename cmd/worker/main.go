@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"github.com/eyeKill/KV/common"
 	pb "github.com/eyeKill/KV/proto"
+	"github.com/eyeKill/KV/worker"
 	"github.com/samuel/go-zookeeper/zk"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -17,7 +18,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 )
@@ -25,6 +25,7 @@ import (
 var (
 	hostname  = flag.String("hostname", "localhost", "The server's hostname")
 	port      = flag.Int("port", 7900, "The server port")
+	path      = flag.String("path", "", "Path for persistent log and slot file.")
 	zkServers = strings.Fields(*flag.String("zk-servers", "localhost:2181",
 		"Zookeeper server cluster, separated by space"))
 	zkNodeRoot = "/kv/nodes"
@@ -33,8 +34,7 @@ var (
 
 var (
 	conn   *zk.Conn
-	rwlock sync.RWMutex
-	data   = make(map[string]string)
+	kv     *worker.KVStore
 	server *grpc.Server
 	log    *zap.Logger
 )
@@ -55,16 +55,12 @@ func getWorkerServer() *WorkerServer {
 }
 
 func (s *WorkerServer) Put(_ context.Context, pair *pb.KVPair) (*pb.PutResponse, error) {
-	rwlock.Lock()
-	data[pair.Key] = pair.Value
-	rwlock.Unlock()
+	kv.Put(pair.Key, pair.Value)
 	return &pb.PutResponse{Status: pb.Status_OK}, nil
 }
 
 func (s *WorkerServer) Get(_ context.Context, key *pb.Key) (*pb.GetResponse, error) {
-	rwlock.RLock()
-	value, ok := data[key.Key]
-	rwlock.RUnlock()
+	value, ok := kv.Get(key.Key)
 	if ok {
 		return &pb.GetResponse{
 			Status: pb.Status_OK,
@@ -79,12 +75,7 @@ func (s *WorkerServer) Get(_ context.Context, key *pb.Key) (*pb.GetResponse, err
 }
 
 func (s *WorkerServer) Delete(_ context.Context, key *pb.Key) (*pb.DeleteResponse, error) {
-	rwlock.Lock()
-	_, ok := data[key.Key]
-	if ok {
-		delete(data, key.Key)
-	}
-	rwlock.Unlock()
+	ok := kv.Delete(key.Key)
 	if ok {
 		return &pb.DeleteResponse{Status: pb.Status_OK}, nil
 	} else {
@@ -153,14 +144,9 @@ func setupCloseHandler() {
 }
 
 func main() {
-	zlog, err := zap.NewDevelopment()
-	if err != nil {
-		fmt.Println("Failed to initialize logger")
-		panic(err)
-	}
-	log = zlog // transfer to global scope
-
 	setupCloseHandler()
+
+	log = common.Log()
 
 	flag.Parse()
 	//if len(*hostname) == 0 {
@@ -172,6 +158,13 @@ func main() {
 	//}
 	// by default we bind to an arbitrary port
 	// this behavior could be changed under environment like docker
+
+	// initialize kv store
+	kvStore, err := worker.NewKVStore("data/")
+	if err != nil {
+		log.Panic("Failed to create KVStore object.", zap.Error(err))
+	}
+	kv = kvStore
 
 	// connect to zookeeper & register itself
 	c, err := common.ConnectToZk(zkServers)

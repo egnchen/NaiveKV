@@ -1,0 +1,19 @@
+// gRPC service for KV data worker internal logics
+// These interfaces should not be exposed to the client
+// @author Eugene Chen cyj205@sjtu.edu.cn
+
+syntax = "proto3";
+
+package kv.proto;
+option go_package = "proto";
+
+import "common.proto";
+import "google/protobuf/empty.proto";
+
+service KVWorkerInternal {
+  rpc flush(google.protobuf.Empty) returns (FlushResponse) {}
+}
+
+message FlushResponse {
+  Status status = 1;
+}

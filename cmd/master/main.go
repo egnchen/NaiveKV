@@ -193,12 +193,7 @@ func setupCloseHandler() {
 
 func main() {
 	// initialize logger
-	l, err := zap.NewDevelopment()
-	if err != nil {
-		fmt.Println("Failed to get logger.")
-		return
-	}
-	log = l // transfer to global scope
+	log = common.Log()
 
 	// parse flag
 	flag.Parse()
