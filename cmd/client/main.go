@@ -56,9 +56,9 @@ func getConnectionString(key string) (string, error) {
 		return "", err
 	}
 	if resp.Status != pb.Status_OK {
-		log.Error("RPC failed.",
-			zap.String("status", pb.Status_name[int32(resp.Status)]), zap.Error(err))
-		return "", err
+		errName := pb.Status_name[int32(resp.Status)]
+		log.Info("RPC failed.", zap.String("status", errName))
+		return "", errors.New(errName)
 	}
 	// get client from client pool,
 	// create one if not found.

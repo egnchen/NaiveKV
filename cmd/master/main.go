@@ -141,7 +141,7 @@ func watchLoop(path string, stopChan <-chan struct{}) {
 		select {
 		case event := <-eventChan:
 			{
-				log.Info("Received event.", zap.Any("event", event))
+				log.Sugar().Infof("Received event %v", event)
 			}
 		case <-stopChan:
 			{
