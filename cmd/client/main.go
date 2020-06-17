@@ -51,13 +51,13 @@ func getConnectionString(key string) (string, error) {
 	k := pb.Key{Key: key}
 	resp, err := masterClient.GetWorker(ctx, &k)
 	if err != nil {
-		log.Error("Failed to get worker node.",
+		log.Warn("Failed to get worker node.",
 			zap.String("key", key), zap.Error(err))
 		return "", err
 	}
 	if resp.Status != pb.Status_OK {
 		errName := pb.Status_name[int32(resp.Status)]
-		log.Info("RPC failed.", zap.String("status", errName))
+		log.Warn("RPC failed.", zap.String("status", errName))
 		return "", errors.New(errName)
 	}
 	// get client from client pool,
@@ -81,7 +81,7 @@ func getWorkerClient(key string) (pb.KVWorkerClient, error) {
 		log.Info("Dialing...", zap.String("server", connString))
 		conn, err := grpc.Dial(connString, opts...)
 		if err != nil {
-			log.Error("Failed to dail.",
+			log.Warn("Failed to dail.",
 				zap.String("server", connString), zap.Error(err))
 			return nil, err
 		}
@@ -124,7 +124,8 @@ func doPut(key string, value string) error {
 		return err
 	}
 	if resp.Status != pb.Status_OK {
-		return errors.New(pb.Status_name[int32(resp.Status)])
+		return errors.New(fmt.Sprintf(
+			"RPC returned %s.", pb.Status_name[int32(resp.Status)]))
 	} else {
 		return nil
 	}
@@ -143,7 +144,8 @@ func doGet(key string) (string, error) {
 		return "", err
 	}
 	if resp.Status != pb.Status_OK {
-		return "", errors.New(pb.Status_name[int32(resp.Status)])
+		return "", errors.New(fmt.Sprintf(
+			"RPC returned %s.", pb.Status_name[int32(resp.Status)]))
 	} else {
 		return resp.Value, nil
 	}
@@ -169,14 +171,14 @@ func doDelete(key string) error {
 }
 
 // flush: for debug only
-func doFlush(key string) error {
+func doCheckpoint(key string) error {
 	internalClient, err := getWorkerInternalClient(key)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	resp, err := internalClient.Flush(ctx, &empty.Empty{})
+	resp, err := internalClient.Checkpoint(ctx, &empty.Empty{})
 	if err != nil {
 		return err
 	}
@@ -220,14 +222,14 @@ func main() {
 		input := scanner.Text()
 		fields := strings.Fields(input)
 		if len(fields) == 0 {
-			break
+			continue
 		}
 		switch fields[0] {
 		case "put":
 			{
 				if len(fields) != 3 {
 					fmt.Println("Usage: put <key> <value>")
-					continue
+					break
 				}
 				if err := doPut(fields[1], fields[2]); err != nil {
 					fmt.Printf("Put %s failed: %v", fields[1], err)
@@ -239,7 +241,7 @@ func main() {
 			{
 				if len(fields) != 2 {
 					fmt.Println("Usage: get <key>")
-					continue
+					break
 				}
 				value, err := doGet(fields[1])
 				if err != nil {
@@ -252,7 +254,7 @@ func main() {
 			{
 				if len(fields) != 2 {
 					fmt.Println("Usage: delete <key>")
-					continue
+					break
 				}
 				if err := doDelete(fields[1]); err != nil {
 					fmt.Printf("Delete <%s> failed: %v\n", fields[1], err)
@@ -260,13 +262,13 @@ func main() {
 					fmt.Println("OK")
 				}
 			}
-		case "flush":
+		case "ckpt":
 			{
 				if len(fields) != 2 {
-					fmt.Println("Usage: flush <key>")
-					continue
+					fmt.Println("Usage: ckpt <key>")
+					break
 				}
-				if err := doFlush(fields[1]); err != nil {
+				if err := doCheckpoint(fields[1]); err != nil {
 					fmt.Printf("Flush <%s> failed: %v\n", fields[1], err)
 				} else {
 					fmt.Println("OK")

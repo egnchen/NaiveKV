@@ -18,3 +18,7 @@ func Log() *zap.Logger {
 	}
 	return logger
 }
+
+func SugaredLog() *zap.SugaredLogger {
+	return Log().Sugar()
+}

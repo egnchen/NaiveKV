@@ -10,67 +10,66 @@ import (
 	"io/ioutil"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 )
 
 const (
-	LOG_FILENAME              = "log"
+	LOG_FILENAME              = "log.txt"
 	SLOT_FILENAME             = "slots.json"
 	SLOT_TMP_FILENAME_PATTERN = "slots.*.json"
 )
 
 type KVStore struct {
-	rwLock   sync.RWMutex
-	data     map[string]string
-	path     string
-	version  uint64
-	logFile  *os.File
-	slotFile *os.File
+	rwLock  sync.RWMutex
+	base    map[string]string
+	path    string
+	version uint64
+	logFile *os.File
 }
 
 func (kv *KVStore) Get(key string) (value string, ok bool) {
 	// get does not require logging
 	kv.rwLock.RLock()
 	defer kv.rwLock.RUnlock()
-	value, ok = kv.data[key]
+	value, ok = kv.base[key]
 	return
 }
 
 func (kv *KVStore) Put(key string, value string) {
 	kv.rwLock.Lock()
 	defer kv.rwLock.Unlock()
-	if err := kv.writeLog(fmt.Sprintf("put %s %s\n", key, value)); err != nil {
+	logEntry := fmt.Sprintf("put %q %q\n", key, value)
+	if err := kv.writeLog(logEntry); err != nil {
 		common.Log().Panic("Failed to flush log.",
-			zap.String("op", "put"),
-			zap.String("key", key), zap.String("value", value),
-			zap.Error(err))
+			zap.String("logEntry", logEntry), zap.Error(err))
 	}
-	kv.data[key] = value
+	kv.base[key] = value
 }
 
 func (kv *KVStore) Delete(key string) (ok bool) {
-	_, ok = kv.data[key]
+	_, ok = kv.base[key]
 	if ok {
 		kv.rwLock.Lock()
 		defer kv.rwLock.Unlock()
-		if err := kv.writeLog(fmt.Sprintf("del %s\n", key)); err != nil {
+		logEntry := fmt.Sprintf("del %q\n", key)
+		if err := kv.writeLog(logEntry); err != nil {
 			common.Log().Panic("Failed to flush log.",
-				zap.String("op", "delete"), zap.String("key", key),
-				zap.Error(err))
+				zap.String("logEntry", logEntry), zap.Error(err))
 		}
-		delete(kv.data, key)
+		delete(kv.base, key)
 	}
 	return
 }
 
 // Clear log entries, flush current kv in memory to slots.
 // Call this when log file is getting too large.
-func (kv *KVStore) Flush() error {
+func (kv *KVStore) Checkpoint() error {
 	kv.rwLock.Lock()
 	defer kv.rwLock.Unlock()
-	// flush data into temporary slot file
-	b, err := json.Marshal(kv.data)
+	// flush base into temporary slot file
+	b, err := json.Marshal(kv.base)
 	if err != nil {
 		return err
 	}
@@ -89,12 +88,9 @@ func (kv *KVStore) Flush() error {
 	// All-or-nothing transition here
 	// note that rwlock **can** be release now
 
-	// remove previous slots file
-	if err := os.Remove(path.Join(kv.path, SLOT_FILENAME)); err != nil {
-		return err
-	}
-	// move temporary file to actual file
-	if err := os.Rename(tmpSlotFile.Name(), kv.slotFile.Name()); err != nil {
+	// rename temporary slot file to actual slot file
+	slotFileName := path.Join(kv.path, SLOT_FILENAME)
+	if err := os.Rename(tmpSlotFile.Name(), slotFileName); err != nil {
 		return err
 	}
 	return nil
@@ -119,7 +115,7 @@ func NewKVStore(pathString string) (*KVStore, error) {
 	var logFile, slotFile *os.File
 
 	var version uint64 = 0
-	var data map[string]string = make(map[string]string)
+	data := make(map[string]string)
 
 	// open / create slot file
 	if _, err := os.Stat(slotFileName); os.IsNotExist(err) {
@@ -132,6 +128,9 @@ func NewKVStore(pathString string) (*KVStore, error) {
 			return nil, err
 		}
 		if err := slotFile.Sync(); err != nil {
+			return nil, err
+		}
+		if err := slotFile.Close(); err != nil {
 			return nil, err
 		}
 		log.Info("Created new slot file.", zap.String("path", slotFileName))
@@ -148,7 +147,10 @@ func NewKVStore(pathString string) (*KVStore, error) {
 		if err := json.Unmarshal(b, &data); err != nil {
 			return nil, err
 		}
-		log.Info("Recovered data from previous slot file.")
+		log.Info("Recovered base from previous slot file.")
+		if err := slotFile.Close(); err != nil {
+			return nil, err
+		}
 	}
 	// open / create log file
 	if _, err := os.Stat(logFileName); os.IsNotExist(err) {
@@ -159,7 +161,7 @@ func NewKVStore(pathString string) (*KVStore, error) {
 		log.Info("Created new log file.", zap.String("path", logFileName))
 	} else {
 		// read log file & parse it
-		logFile, err = os.Open(logFileName)
+		logFile, err = os.OpenFile(logFileName, os.O_RDWR|os.O_APPEND, 0644)
 		if err != nil {
 			return nil, err
 		}
@@ -177,7 +179,19 @@ func NewKVStore(pathString string) (*KVStore, error) {
 							zap.Strings("tokens", tokens))
 						continue
 					}
-					data[tokens[1]] = tokens[2]
+					key, err := strconv.Unquote(tokens[1])
+					if err != nil {
+						log.Error("Invalid log line encountered, skipping.",
+							zap.Strings("tokens", tokens))
+						continue
+					}
+					value, err := strconv.Unquote(tokens[2])
+					if err != nil {
+						log.Error("Invalid log line encountered, skipping.",
+							zap.Strings("tokens", tokens))
+						continue
+					}
+					data[key] = value
 				}
 			case "del":
 				{
@@ -186,26 +200,31 @@ func NewKVStore(pathString string) (*KVStore, error) {
 							zap.Strings("tokens", tokens))
 						continue
 					}
-					if _, ok := data[tokens[1]]; !ok {
+					key, err := strconv.Unquote(tokens[1])
+					if err != nil {
+						log.Error("Invalid log line encountered, skipping.",
+							zap.Strings("tokens", tokens))
+						continue
+					}
+					if _, ok := data[key]; !ok {
 						log.Warn("Warning: Inconsistent del entry in log, entry does not exist.",
 							zap.Strings("tokens", tokens))
 						continue
 					}
-					delete(data, tokens[1])
+					delete(data, key)
 				}
 			default:
 				log.Error("Invalid log line encountered, skipping.",
 					zap.Strings("tokens", tokens))
 			}
 		}
-		log.Info("Recovered data from log entries.")
+		log.Info("Recovered base from log entries.")
 	}
 
 	return &KVStore{
-		data:     data,
-		path:     pathString,
-		version:  version,
-		logFile:  logFile,
-		slotFile: slotFile,
+		base:    data,
+		path:    pathString,
+		version: version,
+		logFile: logFile,
 	}, nil
 }

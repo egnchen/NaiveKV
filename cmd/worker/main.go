@@ -77,8 +77,8 @@ func (s *WorkerServer) Delete(_ context.Context, key *pb.Key) (*pb.DeleteRespons
 	}
 }
 
-func (s *WorkerInternalServer) Flush(_ context.Context, _ *empty.Empty) (*pb.FlushResponse, error) {
-	if err := kv.Flush(); err != nil {
+func (s *WorkerInternalServer) Checkpoint(_ context.Context, _ *empty.Empty) (*pb.FlushResponse, error) {
+	if err := kv.Checkpoint(); err != nil {
 		log.Error("KV flush failed.", zap.Error(err))
 		return &pb.FlushResponse{Status: pb.Status_EFAILED}, nil
 	}
@@ -95,7 +95,7 @@ func registerToZk(conn *zk.Conn) error {
 	} else if !exists {
 		log.Panic("Root node does not exist.", zap.Error(err))
 	}
-	data := common.GetWorkerNodeData(*hostname, *port)
+	data := common.GetNewWorkerNode(*hostname, uint16(*port), 10)
 	b, err := json.Marshal(data)
 	if err != nil {
 		log.Panic("Failed to marshall into json object.", zap.Error(err))

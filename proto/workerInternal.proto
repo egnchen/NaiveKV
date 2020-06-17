@@ -11,7 +11,7 @@ import "common.proto";
 import "google/protobuf/empty.proto";
 
 service KVWorkerInternal {
-  rpc flush(google.protobuf.Empty) returns (FlushResponse) {}
+  rpc checkpoint(google.protobuf.Empty) returns (FlushResponse) {}
 }
 
 message FlushResponse {

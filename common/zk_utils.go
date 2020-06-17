@@ -3,7 +3,15 @@ package common
 import (
 	"fmt"
 	"github.com/samuel/go-zookeeper/zk"
+	"path"
+	"strings"
 	"time"
+)
+
+const (
+	ZK_ROOT            = "/kv"
+	ZK_WORKERS_ROOT    = "/kv/nodes"
+	ZK_MIGRATIONS_ROOT = "/kv/migrations"
 )
 
 func ZkStateString(s *zk.Stat) string {
@@ -20,15 +28,21 @@ func ConnectToZk(servers []string) (*zk.Conn, error) {
 	return conn, err
 }
 
-func EnsurePath(conn *zk.Conn, path string) error {
-	exists, _, err := conn.Exists(path)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		_, err = conn.Create(path, []byte(""), 0, zk.WorldACL(zk.PermAll))
-		if err != nil && err != zk.ErrNodeExists {
+func EnsurePath(conn *zk.Conn, p string) error {
+	// ensure path layer by layer
+	dirs := strings.Split(p, "/")
+	cp := "/"
+	for _, d := range dirs {
+		cp = path.Join(cp, d)
+		exists, _, err := conn.Exists(cp)
+		if err != nil {
 			return err
+		}
+		if !exists {
+			_, err = conn.Create(cp, []byte(""), 0, zk.WorldACL(zk.PermAll))
+			if err != nil && err != zk.ErrNodeExists {
+				return err
+			}
 		}
 	}
 	return nil
