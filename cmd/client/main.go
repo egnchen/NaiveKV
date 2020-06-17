@@ -38,8 +38,8 @@ var (
 // note that these are interfaces, so no pointers
 var (
 	masterClient          pb.KVMasterClient
-	workerClients         map[string]pb.KVWorkerClient         = make(map[string]pb.KVWorkerClient)
-	workerInternalClients map[string]pb.KVWorkerInternalClient = make(map[string]pb.KVWorkerInternalClient)
+	workerClients         = make(map[string]pb.KVWorkerClient)
+	workerInternalClients = make(map[string]pb.KVWorkerInternalClient)
 )
 
 func getConnectionString(key string) (string, error) {

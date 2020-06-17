@@ -15,9 +15,11 @@ import (
 	"github.com/samuel/go-zookeeper/zk"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"io/ioutil"
 	"net"
 	"os"
 	"os/signal"
+	"path"
 	"strings"
 	"syscall"
 	"time"
@@ -26,7 +28,7 @@ import (
 var (
 	hostname  = flag.String("hostname", "localhost", "The server's hostname")
 	port      = flag.Int("port", 7900, "The server port")
-	path      = flag.String("path", "data/", "Path for persistent log and slot file.")
+	filePath  = flag.String("path", "data/", "Path for persistent log and slot file.")
 	zkServers = strings.Fields(*flag.String("zk-servers", "localhost:2181",
 		"Zookeeper server cluster, separated by space"))
 	zkNodeRoot = "/kv/nodes"
@@ -38,6 +40,7 @@ var (
 	kv     *worker.KVStore
 	server *grpc.Server
 	log    *zap.Logger
+	id     common.WorkerId
 )
 
 type WorkerServer struct {
@@ -86,8 +89,7 @@ func (s *WorkerInternalServer) Checkpoint(_ context.Context, _ *empty.Empty) (*p
 }
 
 func registerToZk(conn *zk.Conn) error {
-	// don't have to ensure that the path exist here
-	// since we're merely a worker
+	// Worker don't have to ensure that path exists.
 	nodePath := zkNodeRoot + "/" + zkNodeName
 	exists, _, err := conn.Exists(zkNodeRoot)
 	if err != nil {
@@ -95,8 +97,29 @@ func registerToZk(conn *zk.Conn) error {
 	} else if !exists {
 		log.Panic("Root node does not exist.", zap.Error(err))
 	}
-	data := common.GetNewWorkerNode(*hostname, uint16(*port), 10)
-	b, err := json.Marshal(data)
+
+	// get worker id & configuration
+	b, err := ioutil.ReadFile(path.Join(*filePath, "config.json"))
+	if err != nil && os.IsExist(err) {
+		log.Panic("Failed to read config file.", zap.Error(err))
+	} else if os.IsNotExist(err) {
+		// get new worker id
+		distributedInteger := common.DistributedAtomicInteger{Conn: conn, Path: common.ZK_WORKER_ID}
+		v, err := distributedInteger.Inc()
+		if err != nil {
+			log.Panic("Failed to increase DAI.", zap.Error(err))
+		}
+		id = common.WorkerId(v)
+	} else {
+		var config worker.WorkerConfig
+		if err := json.Unmarshal(b, &config); err != nil {
+			log.Panic("Invalid config file. Ignoring.", zap.Error(err))
+		}
+		id = config.Id
+	}
+	log.Info("Retrieved/generated configuration.", zap.Uint16("id", uint16(id)))
+	data := common.GetNewWorkerNode(*hostname, uint16(*port), id, 10)
+	b, err = json.Marshal(data)
 	if err != nil {
 		log.Panic("Failed to marshall into json object.", zap.Error(err))
 	}
@@ -105,6 +128,18 @@ func registerToZk(conn *zk.Conn) error {
 		log.Panic("Failed to register itself to zookeeper.", zap.Error(err))
 	}
 	log.Info("Registration complete.", zap.String("name", name))
+	// persist config file
+	config := worker.WorkerConfig{
+		Id:      id,
+		Version: 0,
+	}
+	b, err = json.Marshal(config)
+	if err != nil {
+		log.Panic("Failed to unmarshall config file.", zap.Error(err))
+	}
+	if err := ioutil.WriteFile(path.Join(*filePath, "config.json"), b, 0644); err != nil {
+		log.Panic("Failed to write config file.", zap.Error(err))
+	}
 	return nil
 }
 
@@ -168,7 +203,7 @@ func main() {
 	// this behavior could be changed under environment like docker
 
 	// initialize kv store
-	kvStore, err := worker.NewKVStore(*path)
+	kvStore, err := worker.NewKVStore(*filePath)
 	if err != nil {
 		log.Panic("Failed to create KVStore object.", zap.Error(err))
 	}

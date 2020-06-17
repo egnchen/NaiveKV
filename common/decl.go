@@ -1,5 +1,12 @@
-// decl: common data structures
+// decl: common data structures & constants
 package common
+
+const (
+	ZK_ROOT            = "/kv"
+	ZK_WORKERS_ROOT    = "/kv/nodes"
+	ZK_MIGRATIONS_ROOT = "/kv/migrations"
+	ZK_WORKER_ID       = "/kv/_next_worker_id"
+)
 
 type Node struct {
 	Hostname string
@@ -34,9 +41,9 @@ func GetNewMasterNode(hostname string, port uint16) Master {
 	}
 }
 
-func GetNewWorkerNode(hostname string, port uint16, weight uint) Worker {
+func GetNewWorkerNode(hostname string, port uint16, id WorkerId, weight uint) Worker {
 	return Worker{
-		Id: 0,
+		Id: id,
 		Host: Node{
 			Hostname: hostname,
 			Port:     port,

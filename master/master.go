@@ -56,11 +56,19 @@ func (m *MasterServer) GetWorker(_ context.Context, key *pb.Key) (*pb.GetWorkerR
 func (m *MasterServer) RegisterToZk(conn *zk.Conn) error {
 	log := common.Log()
 	// ensure all paths exist
-	if err := common.EnsurePath(conn, common.ZK_WORKERS_ROOT); err != nil {
+	if err := common.EnsurePathRecursive(conn, common.ZK_WORKERS_ROOT); err != nil {
 		return err
 	}
 	if err := common.EnsurePath(conn, common.ZK_MIGRATIONS_ROOT); err != nil {
 		return err
+	}
+
+	// create worker id
+	distributedId := common.DistributedAtomicInteger{Conn: conn, Path: common.ZK_WORKER_ID}
+	// Initial value should be 0, if not set
+	// the first valid value should be 1
+	if err := distributedId.SetDefault(0); err != nil {
+		log.Panic("Failed to initialize global worker id.", zap.Error(err))
 	}
 
 	nodePath := path.Join(common.ZK_ROOT, "master")
@@ -89,6 +97,15 @@ watchLoop:
 			continue
 		}
 
+		// get largest worker id from previous worker set
+		// to determine which one is new
+		var oldIds common.WorkerId = 0
+		for _, w := range m.workers {
+			if oldIds < w.Id {
+				oldIds = w.Id
+			}
+		}
+
 		// update local metadata cache
 		workers := make(map[common.WorkerId]common.Worker)
 		newWorkers := make([]common.Worker, 0)
@@ -104,7 +121,7 @@ watchLoop:
 				log.Warn("Data invalid.", zap.String("path", chPath), zap.ByteString("content", b))
 				continue
 			}
-			if data.Id == 0 {
+			if data.Id > oldIds {
 				newWorkers = append(newWorkers, data)
 			} else {
 				workers[data.Id] = data
@@ -112,21 +129,12 @@ watchLoop:
 		}
 		log.Sugar().Infof("Retrieved newest children, workers:%v, newWorkers:%v", workers, newWorkers)
 		if len(newWorkers) > 0 {
-			// assign new worker id to them
-			var id common.WorkerId = 0
-			for _, w := range m.workers {
-				if w.Id > id {
-					id = w.Id
-				}
-			}
-			for _, w := range newWorkers {
-				id = id + 1
-				w.Id = id
-			}
-			// new workers are being appended
-			// allocate new slots to them
+			// allocate new slots to them & do migration
 			migration := m.allocateSlots(newWorkers)
 			m.migrate(migration)
+			for _, w := range newWorkers {
+				workers[w.Id] = w
+			}
 		}
 
 		m.rwLock.Lock()
@@ -199,4 +207,10 @@ func (m *MasterServer) migrate(migration SlotMigration) {
 	m.slots.Version = migration.Version
 	m.rwLock.Unlock()
 	log.Infof("Successfully migrated %d slots.", len(migration.MigrationTable))
+	// print statistics
+	stat := make(map[common.WorkerId]int)
+	for _, id := range m.slots.Slots {
+		stat[id] += 1
+	}
+	log.Infof("Distribution for now: %v", stat)
 }
