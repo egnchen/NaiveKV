@@ -14,7 +14,7 @@ import (
 	"path"
 )
 
-type WorkerServer struct {
+type Server struct {
 	pb.UnimplementedKVWorkerServer
 	Hostname string
 	Port     uint16
@@ -28,12 +28,12 @@ const (
 	CONFIG_FILENAME = "config.json"
 )
 
-func NewWorkerServer(hostname string, port uint16, filePath string) (*WorkerServer, error) {
+func NewWorkerServer(hostname string, port uint16, filePath string) (*Server, error) {
 	kv, err := NewKVStore(filePath)
 	if err != nil {
 		return nil, err
 	}
-	return &WorkerServer{
+	return &Server{
 		Hostname: hostname,
 		Port:     port,
 		FilePath: filePath,
@@ -42,12 +42,12 @@ func NewWorkerServer(hostname string, port uint16, filePath string) (*WorkerServ
 	}, nil
 }
 
-func (s *WorkerServer) Put(_ context.Context, pair *pb.KVPair) (*pb.PutResponse, error) {
+func (s *Server) Put(_ context.Context, pair *pb.KVPair) (*pb.PutResponse, error) {
 	s.kv.Put(pair.Key, pair.Value)
 	return &pb.PutResponse{Status: pb.Status_OK}, nil
 }
 
-func (s *WorkerServer) Get(_ context.Context, key *pb.Key) (*pb.GetResponse, error) {
+func (s *Server) Get(_ context.Context, key *pb.Key) (*pb.GetResponse, error) {
 	value, ok := s.kv.Get(key.Key)
 	if ok {
 		return &pb.GetResponse{
@@ -62,7 +62,7 @@ func (s *WorkerServer) Get(_ context.Context, key *pb.Key) (*pb.GetResponse, err
 	}
 }
 
-func (s *WorkerServer) Delete(_ context.Context, key *pb.Key) (*pb.DeleteResponse, error) {
+func (s *Server) Delete(_ context.Context, key *pb.Key) (*pb.DeleteResponse, error) {
 	ok := s.kv.Delete(key.Key)
 	if ok {
 		return &pb.DeleteResponse{Status: pb.Status_OK}, nil
@@ -71,7 +71,7 @@ func (s *WorkerServer) Delete(_ context.Context, key *pb.Key) (*pb.DeleteRespons
 	}
 }
 
-func (s *WorkerServer) Checkpoint(_ context.Context, _ *empty.Empty) (*pb.FlushResponse, error) {
+func (s *Server) Checkpoint(_ context.Context, _ *empty.Empty) (*pb.FlushResponse, error) {
 	if err := s.kv.Checkpoint(); err != nil {
 		common.Log().Error("KV flush failed.", zap.Error(err))
 		return &pb.FlushResponse{Status: pb.Status_EFAILED}, nil
@@ -80,7 +80,7 @@ func (s *WorkerServer) Checkpoint(_ context.Context, _ *empty.Empty) (*pb.FlushR
 }
 
 // Update configuration. Read configuration if file exists, and generate a new one otherwise.
-func (s *WorkerServer) updateConfig() error {
+func (s *Server) updateConfig() error {
 	// get worker id & configuration
 	b, err := ioutil.ReadFile(path.Join(s.FilePath, CONFIG_FILENAME))
 	if err != nil && os.IsExist(err) {
@@ -103,7 +103,7 @@ func (s *WorkerServer) updateConfig() error {
 	return nil
 }
 
-func (s *WorkerServer) RegisterToZk(conn *zk.Conn) error {
+func (s *Server) RegisterToZk(conn *zk.Conn) error {
 	log := common.Log()
 
 	// Worker don't have to ensure that path exists.

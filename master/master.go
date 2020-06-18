@@ -8,36 +8,37 @@ import (
 	"github.com/samuel/go-zookeeper/zk"
 	"go.uber.org/zap"
 	"hash/crc32"
-	"math/rand"
 	"path"
 	"sync"
 )
 
-type MasterServer struct {
+type Server struct {
 	pb.UnimplementedKVMasterServer
 	Hostname string
 	Port     uint16
 
-	conn    *zk.Conn
-	rwLock  sync.RWMutex
-	slots   HashSlotRing
-	workers map[common.WorkerId]common.Worker
+	conn      *zk.Conn
+	rwLock    sync.RWMutex
+	slots     HashSlotRing
+	allocator HashSlotAllocator
+	workers   map[common.WorkerId]common.Worker
 }
 
-func NewMasterServer(hostname string, port uint16) MasterServer {
-	return MasterServer{
-		Hostname: hostname,
-		Port:     port,
-		slots:    NewHashSlotRing(DEFAULT_SLOT_COUNT),
+func NewMasterServer(hostname string, port uint16) Server {
+	return Server{
+		Hostname:  hostname,
+		Port:      port,
+		slots:     NewHashSlotRing(DEFAULT_SLOT_COUNT),
+		allocator: RouletteAllocator{},
 	}
 }
 
 // gRPC call handler
-func (m *MasterServer) GetWorker(_ context.Context, key *pb.Key) (*pb.GetWorkerResponse, error) {
+func (m *Server) GetWorker(_ context.Context, key *pb.Key) (*pb.GetWorkerResponse, error) {
 	m.rwLock.RLock()
-	defer m.rwLock.RUnlock()
 	h := crc32.ChecksumIEEE([]byte(key.Key))
 	id := m.slots.Slots[h%uint32(m.slots.Len())]
+	m.rwLock.Unlock()
 	if id == 0 {
 		return &pb.GetWorkerResponse{
 			Status: pb.Status_ENOSERVER,
@@ -53,7 +54,7 @@ func (m *MasterServer) GetWorker(_ context.Context, key *pb.Key) (*pb.GetWorkerR
 	}
 }
 
-func (m *MasterServer) RegisterToZk(conn *zk.Conn) error {
+func (m *Server) RegisterToZk(conn *zk.Conn) error {
 	log := common.Log()
 	// ensure all paths exist
 	if err := common.EnsurePathRecursive(conn, common.ZK_WORKERS_ROOT); err != nil {
@@ -85,7 +86,7 @@ func (m *MasterServer) RegisterToZk(conn *zk.Conn) error {
 }
 
 // Watch node matadata in zookeeper and update timely.
-func (m *MasterServer) Watch(stopChan <-chan struct{}) {
+func (m *Server) Watch(stopChan <-chan struct{}) {
 	log := common.Log()
 	log.Info("Starting watch loop.")
 
@@ -130,7 +131,10 @@ watchLoop:
 		log.Sugar().Infof("Retrieved newest children, workers:%v, newWorkers:%v", workers, newWorkers)
 		if len(newWorkers) > 0 {
 			// allocate new slots to them & do migration
-			migration := m.allocateSlots(newWorkers)
+			migration, err := m.allocateSlots(newWorkers)
+			if err != nil {
+				log.Error("Allocator failed.", zap.Error(err))
+			}
 			m.migrate(migration)
 			for _, w := range newWorkers {
 				workers[w.Id] = w
@@ -151,55 +155,18 @@ watchLoop:
 	}
 }
 
-func (m *MasterServer) allocateSlots(newWorkers []common.Worker) SlotMigration {
-	// This method is based on roulette algorithm
-	// We use a better strategy here, create an array of slot ids and shuffle it
-	// and then split the array according to the weights
-	slog := common.SugaredLog()
-
-	// Get weight already allocated
-	// this part stays intact
-	var weight int64 = 0
-	if len(m.workers) > 0 {
-		for _, worker := range m.workers {
-			weight += int64(worker.Weight)
-		}
+func (m *Server) allocateSlots(newWorkers []common.Worker) (*SlotMigration, error) {
+	table, err := m.allocator.AllocateSlots(&m.slots, m.workers, newWorkers)
+	if err != nil {
+		return nil, err
 	}
-
-	totalWeight := weight
-	// Append new workers
-	for _, worker := range newWorkers {
-		totalWeight += int64(worker.Weight)
-	}
-
-	// Roulette
-	migration := SlotMigration{
-		Version:        m.slots.Version + 1,
-		MigrationTable: make(map[common.SlotId]common.WorkerId),
-	}
-
-	// Generate pseudo-random permutation
-	// this code is derived from rand.Perm
-	slotArr := make([]common.SlotId, m.slots.Len())
-	for i := uint16(1); i < m.slots.Len(); i++ {
-		j := rand.Int31n(int32(i))
-		slotArr[i] = slotArr[j]
-		slotArr[j] = common.SlotId(i)
-	}
-
-	slotSlice := slotArr[weight*int64(m.slots.Len())/totalWeight:]
-	for _, n := range newWorkers {
-		idx := int64(n.Weight) * int64(m.slots.Len()) / totalWeight
-		slog.Infof("Roulette: distributing %d slots to worker %d.", idx, n.Id)
-		for _, s := range slotSlice[:idx] {
-			migration.MigrationTable[s] = n.Id
-		}
-		slotSlice = slotSlice[idx:]
-	}
-	return migration
+	return &SlotMigration{
+		Version: m.slots.Version + 1,
+		Table:   table,
+	}, nil
 }
 
-func (m *MasterServer) migrate(migration SlotMigration) {
+func (m *Server) migrate(migration *SlotMigration) {
 	log := common.SugaredLog()
 	// update the slot table
 	if migration.Version != m.slots.Version+1 {
@@ -207,12 +174,12 @@ func (m *MasterServer) migrate(migration SlotMigration) {
 			zap.Uint("current", m.slots.Version), zap.Uint("proposed", migration.Version))
 	}
 	m.rwLock.Lock()
-	for slot, workerId := range migration.MigrationTable {
+	for slot, workerId := range migration.Table {
 		m.slots.Slots[slot] = workerId
 	}
 	m.slots.Version = migration.Version
 	m.rwLock.Unlock()
-	log.Infof("Successfully migrated %d slots.", len(migration.MigrationTable))
+	log.Infof("Successfully migrated %d slots.", len(migration.Table))
 	// print statistics
 	stat := make(map[common.WorkerId]int)
 	for _, id := range m.slots.Slots {

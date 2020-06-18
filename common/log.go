@@ -3,20 +3,23 @@ package common
 import (
 	"fmt"
 	"go.uber.org/zap"
+	"sync"
 )
 
+var once sync.Once
 var logger *zap.Logger = nil
 
-// TODO make this thread-safe
 func Log() *zap.Logger {
-	if logger == nil {
-		l, err := zap.NewDevelopment()
-		if err != nil {
-			fmt.Printf("Failed to initialize logger: %v\n", err)
-			return nil
+	once.Do(func() {
+		if logger == nil {
+			l, err := zap.NewDevelopment()
+			if err != nil {
+				panic(fmt.Sprintf("Failed to initialize logger: %v\n", err))
+			}
+			logger = l
 		}
-		logger = l
-	}
+	})
+
 	return logger
 }
 
