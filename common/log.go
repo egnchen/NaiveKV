@@ -7,6 +7,7 @@ import (
 
 var logger *zap.Logger = nil
 
+// TODO make this thread-safe
 func Log() *zap.Logger {
 	if logger == nil {
 		l, err := zap.NewDevelopment()

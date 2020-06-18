@@ -5,7 +5,9 @@ const (
 	ZK_ROOT            = "/kv"
 	ZK_WORKERS_ROOT    = "/kv/nodes"
 	ZK_MIGRATIONS_ROOT = "/kv/migrations"
-	ZK_WORKER_ID       = "/kv/_next_worker_id"
+	ZK_WORKER_ID       = "/kv/next_worker_id"
+	ZK_MASTER_NAME     = "master"
+	ZK_WORKER_NAME     = "worker"
 )
 
 type Node struct {

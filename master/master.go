@@ -14,6 +14,7 @@ import (
 )
 
 type MasterServer struct {
+	pb.UnimplementedKVMasterServer
 	Hostname string
 	Port     uint16
 
@@ -70,7 +71,7 @@ func (m *MasterServer) RegisterToZk(conn *zk.Conn) error {
 		log.Panic("Failed to initialize global worker id.", zap.Error(err))
 	}
 
-	nodePath := path.Join(common.ZK_ROOT, "master")
+	nodePath := path.Join(common.ZK_ROOT, common.ZK_MASTER_NAME)
 	data := common.GetNewMasterNode(m.Hostname, m.Port)
 	b, err := json.Marshal(data)
 	if err != nil {
@@ -186,7 +187,7 @@ func (m *MasterServer) allocateSlots(newWorkers []common.Worker) SlotMigration {
 		slotArr[j] = common.SlotId(i)
 	}
 
-	slotSlice := slotArr[int64(weight)*int64(m.slots.Len())/totalWeight:]
+	slotSlice := slotArr[weight*int64(m.slots.Len())/totalWeight:]
 	for _, n := range newWorkers {
 		idx := int64(n.Weight) * int64(m.slots.Len()) / totalWeight
 		slog.Infof("Roulette: distributing %d slots to worker %d.", idx, n.Id)

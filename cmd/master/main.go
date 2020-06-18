@@ -18,7 +18,6 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 )
 
 var (
@@ -57,21 +56,21 @@ func setupCloseHandler() {
 }
 
 func main() {
+	setupCloseHandler()
 	log = common.Log()
 	flag.Parse()
-	setupCloseHandler()
 
 	// connect to zookeeper & register itself
-	c, err := common.ConnectToZk(zkServers)
+	conn, err := common.ConnectToZk(zkServers)
 	if err != nil {
 		log.Panic("Failed to connect to zookeeper.", zap.Error(err))
 	}
-	log.Info("Connected to zookeeper.")
 	defer conn.Close()
+	log.Info("Connected to zookeeper.", zap.String("server", conn.Server()))
 
 	m := master.NewMasterServer(*hostname, uint16(*port))
 	// register master to zookeeper & start watching
-	if err := m.RegisterToZk(c); err != nil {
+	if err := m.RegisterToZk(conn); err != nil {
 		log.Panic("Failed to register to zookeeper.", zap.Error(err))
 	}
 	log.Info("Registration complete.")
@@ -80,21 +79,13 @@ func main() {
 	// open tcp socket
 	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", *port))
 	if err != nil {
-		log.Panic("failed to listen to port.",
-			zap.Int("port", *port), zap.Error(err))
+		log.Panic("failed to listen to port.", zap.Int("port", *port), zap.Error(err))
 	}
 	// create, register & start gRPC server
 	server := common.NewGrpcServer()
 	pb.RegisterKVMasterServer(server, &m)
-	go func() {
-		if err := server.Serve(listener); err != nil {
-			log.Error("gRPC server raised error.", zap.Error(err))
-		}
-	}()
 	defer server.GracefulStop()
-
-	// May you rest in a deep and restless slumber
-	for {
-		time.Sleep(10 * time.Second)
+	if err := server.Serve(listener); err != nil {
+		log.Error("gRPC server raised error.", zap.Error(err))
 	}
 }
