@@ -10,7 +10,6 @@ import (
 	"hash/crc32"
 	"math/rand"
 	"path"
-	"sort"
 	"sync"
 )
 
@@ -152,27 +151,24 @@ watchLoop:
 }
 
 func (m *MasterServer) allocateSlots(newWorkers []common.Worker) SlotMigration {
-	// Roulette random allocation
+	// This method is based on roulette algorithm
+	// We use a better strategy here, create an array of slot ids and shuffle it
+	// and then split the array according to the weights
 	slog := common.SugaredLog()
-	type Chip struct {
-		w int64
-		n *common.Worker
-	}
-	chips := make([]Chip, 0)
 
 	// Get weight already allocated
+	// this part stays intact
 	var weight int64 = 0
 	if len(m.workers) > 0 {
 		for _, worker := range m.workers {
 			weight += int64(worker.Weight)
 		}
-		chips = append(chips, Chip{w: weight, n: nil})
 	}
 
+	totalWeight := weight
 	// Append new workers
 	for _, worker := range newWorkers {
-		weight += int64(worker.Weight)
-		chips = append(chips, Chip{w: weight, n: &worker})
+		totalWeight += int64(worker.Weight)
 	}
 
 	// Roulette
@@ -180,16 +176,25 @@ func (m *MasterServer) allocateSlots(newWorkers []common.Worker) SlotMigration {
 		Version:        m.slots.Version + 1,
 		MigrationTable: make(map[common.SlotId]common.WorkerId),
 	}
-	for i := 0; i < len(m.slots.Slots); i++ {
-		r := rand.Int63n(weight)
-		idx := sort.Search(len(chips), func(x int) bool { return chips[x].w >= r })
-		if chips[idx].n != nil {
-			// allocated into a new piece
-			migration.MigrationTable[common.SlotId(i)] = chips[idx].n.Id
-		}
+
+	// Generate pseudo-random permutation
+	// this code is derived from rand.Perm
+	slotArr := make([]common.SlotId, m.slots.Len())
+	for i := uint16(1); i < m.slots.Len(); i++ {
+		j := rand.Int31n(int32(i))
+		slotArr[i] = slotArr[j]
+		slotArr[j] = common.SlotId(i)
 	}
-	slog.Infof("Roulette completed, size of migration table is %d.",
-		len(migration.MigrationTable))
+
+	slotSlice := slotArr[int64(weight)*int64(m.slots.Len())/totalWeight:]
+	for _, n := range newWorkers {
+		idx := int64(n.Weight) * int64(m.slots.Len()) / totalWeight
+		slog.Infof("Roulette: distributing %d slots to worker %d.", idx, n.Id)
+		for _, s := range slotSlice[:idx] {
+			migration.MigrationTable[s] = n.Id
+		}
+		slotSlice = slotSlice[idx:]
+	}
 	return migration
 }
 
