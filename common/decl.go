@@ -26,7 +26,7 @@ type SlotId uint16
 type Worker struct {
 	Id     WorkerId
 	Host   Node
-	Weight uint
+	Weight float32
 	Status string
 }
 
@@ -44,7 +44,7 @@ func GetNewMasterNode(hostname string, port uint16) Master {
 	}
 }
 
-func GetNewWorkerNode(hostname string, port uint16, id WorkerId, weight uint) Worker {
+func GetNewWorkerNode(hostname string, port uint16, id WorkerId, weight float32) Worker {
 	return Worker{
 		Id: id,
 		Host: Node{

@@ -114,6 +114,7 @@ func (s *Server) RegisterToZk(conn *zk.Conn) error {
 	} else if !exists {
 		return errors.New("root node in zookeeper does not exist, start master node first")
 	}
+	s.conn = conn
 
 	if err := s.updateConfig(); err != nil {
 		log.Warn("Failed to update configuration.", zap.Error(err))

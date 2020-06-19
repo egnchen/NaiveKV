@@ -12,7 +12,7 @@ var logger *zap.Logger = nil
 type ZkLoggerAdapter struct{}
 
 func (_ *ZkLoggerAdapter) Printf(fmt string, args ...interface{}) {
-	SugaredLog().Infof(fmt, args...)
+	SugaredLog().Infof("[ZooKeeper] "+fmt, args...)
 }
 
 func Log() *zap.Logger {

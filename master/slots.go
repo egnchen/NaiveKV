@@ -60,30 +60,33 @@ func (r RouletteAllocator) AllocateSlots(ring *HashSlotRing,
 	} else {
 		// already allocated before, we need to add new node to the hash ring
 		// to make things easier we change the data structure here...
-		workerSlots := make(map[common.WorkerId][]common.SlotId)
+		oldWorkerSlots := make(map[common.WorkerId][]common.SlotId)
 		for s, w := range ring.Slots {
-			workerSlots[w] = append(workerSlots[w], common.SlotId(s))
+			oldWorkerSlots[w] = append(oldWorkerSlots[w], common.SlotId(s))
 		}
-		if _, ok := workerSlots[0]; ok {
+		if _, ok := oldWorkerSlots[0]; ok {
 			panic("Error, still have unallocated slots before.")
 		}
-		var oldWeight int64 = 0
+		var oldWeight float32 = 0
 		for _, n := range oldWorkers {
-			oldWeight += int64(n.Weight)
+			oldWeight += n.Weight
 		}
-		var newWeight int64 = 0
+		var newWeight float32 = 0
 		for _, n := range newWorkers {
-			newWeight += int64(n.Weight)
+			newWeight += n.Weight
 		}
-		toAllocate := (int64(ring.Len())*newWeight + 1) / (newWeight + oldWeight)
-		slog.Infof("to allocate: %d", toAllocate)
-		for id, slots := range workerSlots {
-			worker, ok := oldWorkers[id]
-			if !ok {
-				panic("Error: Inconsistent ring & worker map.")
-			}
-			s := r.selectFrom(slots, int(toAllocate*int64(worker.Weight)/oldWeight))
+		toAllocate := uint32(float32(ring.Len())*newWeight/(newWeight+oldWeight) + 0.5)
+		slog.Infof("To allocate: %d", toAllocate)
+
+		var w float32 = 0
+		idxStart := 0
+		for id, slots := range oldWorkerSlots {
+			worker := oldWorkers[id]
+			w += worker.Weight
+			idxEnd := int(float32(toAllocate)*w/oldWeight + 0.5)
+			s := r.selectFrom(slots, idxEnd-idxStart)
 			r.distributeTo(s, &table, newWorkers)
+			idxStart = idxEnd
 		}
 	}
 	return table, nil
