@@ -107,8 +107,8 @@ func (s *Server) RegisterToZk(conn *zk.Conn) error {
 	log := common.Log()
 
 	// Worker don't have to ensure that path exists.
-	nodePath := path.Join(common.ZK_WORKERS_ROOT, common.ZK_WORKER_NAME)
-	exists, _, err := conn.Exists(common.ZK_WORKERS_ROOT)
+	nodePath := path.Join(common.ZK_NODES_ROOT, common.ZK_WORKER_NAME)
+	exists, _, err := conn.Exists(common.ZK_NODES_ROOT)
 	if err != nil {
 		return err
 	} else if !exists {

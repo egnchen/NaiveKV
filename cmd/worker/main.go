@@ -65,13 +65,13 @@ func main() {
 	defer conn.Close()
 	log.Info("Connected to zookeeper.", zap.String("server", conn.Server()))
 
-	// initialize worker server
-	worker, err := worker.NewWorkerServer(*hostname, uint16(*port), *filePath)
+	// initialize workerServer server
+	workerServer, err := worker.NewWorkerServer(*hostname, uint16(*port), *filePath)
 	if err != nil {
-		log.Panic("Failed to initialize worker object.", zap.Error(err))
+		log.Panic("Failed to initialize workerServer object.", zap.Error(err))
 	}
 
-	if err := worker.RegisterToZk(conn); err != nil {
+	if err := workerServer.RegisterToZk(conn); err != nil {
 		log.Panic("Failed to register to zookeeper.", zap.Error(err))
 	}
 
@@ -82,8 +82,8 @@ func main() {
 	}
 	// create, register & start gRPC server
 	server := common.NewGrpcServer()
-	pb.RegisterKVWorkerServer(server, worker)
-	pb.RegisterKVWorkerInternalServer(server, worker)
+	pb.RegisterKVWorkerServer(server, workerServer)
+	pb.RegisterKVWorkerInternalServer(server, workerServer)
 	defer server.GracefulStop()
 	if err := server.Serve(listener); err != nil {
 		log.Error("gRPC server raised error.", zap.Error(err))

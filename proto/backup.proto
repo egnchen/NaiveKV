@@ -1,0 +1,23 @@
+// gRPC service for KV data backup
+// This is between worker node and backup node
+
+syntax = "proto3";
+
+package kv.proto;
+option go_package = "proto";
+
+import "common.proto";
+
+service BackupService {
+  rpc Backup(stream BackupEntry) returns (stream BackupReply) {}
+}
+
+message BackupEntry {
+  Operation op = 1;
+  string key = 2;
+  string value = 3;
+}
+
+message BackupReply {
+  Status status = 1;
+}

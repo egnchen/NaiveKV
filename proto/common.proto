@@ -18,6 +18,16 @@ message KVPair {
   string value = 2;
 }
 
+message WorkerId {
+  uint32 id = 1;
+}
+
+enum Operation {
+  GET = 0;
+  PUT = 1;
+  DELETE = 2;
+}
+
 enum Status {
   OK = 0;
   ENOENT = 1;

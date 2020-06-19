@@ -20,6 +20,9 @@ func ZkStateString(s *zk.Stat) string {
 
 func ConnectToZk(servers []string) (*zk.Conn, error) {
 	conn, _, err := zk.Connect(servers, time.Second*3)
+	if err == nil {
+		conn.SetLogger(&ZkLoggerAdapter{})
+	}
 	return conn, err
 }
 

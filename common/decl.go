@@ -3,7 +3,8 @@ package common
 
 const (
 	ZK_ROOT            = "/kv"
-	ZK_WORKERS_ROOT    = "/kv/nodes"
+	ZK_NODES_ROOT      = "/kv/nodes"
+	ZK_WORKERS_ROOT    = "/kv/workers"
 	ZK_MIGRATIONS_ROOT = "/kv/migrations"
 	ZK_WORKER_ID       = "/kv/next_worker_id"
 	ZK_MASTER_NAME     = "master"

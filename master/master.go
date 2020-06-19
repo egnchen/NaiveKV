@@ -34,7 +34,7 @@ func NewMasterServer(hostname string, port uint16) Server {
 }
 
 // gRPC call handler
-func (m *Server) GetWorker(_ context.Context, key *pb.Key) (*pb.GetWorkerResponse, error) {
+func (m *Server) GetWorkerByKey(_ context.Context, key *pb.Key) (*pb.GetWorkerResponse, error) {
 	m.rwLock.RLock()
 	h := crc32.ChecksumIEEE([]byte(key.Key))
 	id := m.slots.Slots[h%uint32(m.slots.Len())]
@@ -54,10 +54,29 @@ func (m *Server) GetWorker(_ context.Context, key *pb.Key) (*pb.GetWorkerRespons
 	}
 }
 
+func (m *Server) GetWorkerById(_ context.Context, id *pb.WorkerId) (*pb.GetWorkerResponse, error) {
+	m.rwLock.RLock()
+	worker, ok := m.workers[common.WorkerId(id.Id)]
+	if ok {
+		return &pb.GetWorkerResponse{
+			Status: pb.Status_OK,
+			Worker: &pb.Worker{
+				Hostname: worker.Host.Hostname,
+				Port:     int32(worker.Host.Port),
+			},
+		}, nil
+	} else {
+		return &pb.GetWorkerResponse{
+			Status: pb.Status_ENOSERVER,
+			Worker: nil,
+		}, nil
+	}
+}
+
 func (m *Server) RegisterToZk(conn *zk.Conn) error {
 	log := common.Log()
 	// ensure all paths exist
-	if err := common.EnsurePathRecursive(conn, common.ZK_WORKERS_ROOT); err != nil {
+	if err := common.EnsurePathRecursive(conn, common.ZK_NODES_ROOT); err != nil {
 		return err
 	}
 	if err := common.EnsurePath(conn, common.ZK_MIGRATIONS_ROOT); err != nil {
@@ -85,14 +104,14 @@ func (m *Server) RegisterToZk(conn *zk.Conn) error {
 	return nil
 }
 
-// Watch node matadata in zookeeper and update timely.
+// Watch node matadata in zookeeper and update accordingly.
 func (m *Server) Watch(stopChan <-chan struct{}) {
 	log := common.Log()
 	log.Info("Starting watch loop.")
 
 watchLoop:
 	for {
-		children, _, eventChan, err := m.conn.ChildrenW(common.ZK_WORKERS_ROOT)
+		children, _, eventChan, err := m.conn.ChildrenW(common.ZK_NODES_ROOT)
 		if err != nil {
 			log.Info("Error occurred while watching nodes dir.", zap.Error(err))
 			continue
@@ -112,7 +131,7 @@ watchLoop:
 		newWorkers := make([]common.Worker, 0)
 		for _, chName := range children {
 			var data common.Worker
-			chPath := path.Join(common.ZK_WORKERS_ROOT, chName)
+			chPath := path.Join(common.ZK_NODES_ROOT, chName)
 			b, _, err := m.conn.Get(chPath)
 			if err != nil {
 				log.Warn("Failed to retrieve data.", zap.String("path", chPath))
@@ -140,6 +159,8 @@ watchLoop:
 				workers[w.Id] = w
 			}
 		}
+
+		// TODO persist worker node informations in zookeeper
 
 		m.rwLock.Lock()
 		m.workers = workers
