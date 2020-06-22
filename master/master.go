@@ -144,7 +144,7 @@ watchLoop:
 			case *common.PrimaryWorkerNode:
 				node := n.(*common.PrimaryWorkerNode)
 				if _, ok := lostPrimaries[chName]; ok {
-					delete(lostBackups, chName)
+					delete(lostPrimaries, chName)
 					continue
 				} else {
 					newPrimaries[chName] = node
@@ -164,7 +164,7 @@ watchLoop:
 		update := make(map[common.WorkerId]*common.Worker)
 		// do migration according to lost & new nodes
 		for chName, node := range lostPrimaries {
-			log.Warn("Primary down detected.",
+			log.Info("Primary down detected.",
 				zap.String("name", chName), zap.Uint16("id", uint16(node.Id)))
 			cpy := *m.workers[node.Id]
 			cpy.Primary = ""
@@ -172,14 +172,14 @@ watchLoop:
 			// TODO bump a backup node up
 		}
 		for chName, node := range lostBackups {
-			log.Warn("Backup down detected.",
+			log.Info("Backup down detected.",
 				zap.String("name", chName), zap.Uint16("id", uint16(node.Id)))
 			if _, ok := update[node.Id]; !ok {
 				cpy := *m.workers[node.Id]
 				update[node.Id] = &cpy
 			}
 			// modify in place
-			update[node.Id].Backups = common.RemoveElement(update[node.Id].Backups, chName)
+			update[node.Id].Backups = common.RemoveElements(update[node.Id].Backups, chName)
 		}
 		newWorkers := make(map[common.WorkerId]*common.Worker)
 		for chName, node := range newPrimaries {
@@ -269,6 +269,8 @@ watchLoop:
 		for id, worker := range update {
 			m.workers[id] = worker
 		}
+		log.Sugar().Info(m.primaries)
+		log.Sugar().Info(m.backups)
 
 		select {
 		case event := <-eventChan:

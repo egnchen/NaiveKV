@@ -4,54 +4,99 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/eyeKill/KV/common"
 	pb "github.com/eyeKill/KV/proto"
 	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/samuel/go-zookeeper/zk"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/metadata"
-	"io"
 	"io/ioutil"
 	"os"
 	"path"
 	"strconv"
+	"sync"
 )
 
-type Ack struct {
-	Id      BackupWorkerId
-	Version int32
+type BackupRoutine struct {
+	name   string
+	conn   pb.KVBackupClient
+	ch     chan *pb.BackupEntry
+	stopCh chan struct{}
+}
+
+func (s *BackupRoutine) loop() {
+	log := common.Log()
+	// start gRPC bi-directional stream
+	stream, err := s.conn.Backup(context.Background())
+	if err != nil {
+		log.Error("Failed to open grpc stream.", zap.Error(err))
+		return
+	}
+	log.Sugar().Infof("Backup routine for %s started", s.name)
+backupRoutine:
+	for {
+		select {
+		case ent := <-s.ch:
+			if err := stream.Send(ent); err != nil {
+				log.Error("Failed to send backup entry.", zap.Error(err))
+				break backupRoutine
+			}
+		case <-s.stopCh:
+			break backupRoutine
+		}
+	}
 }
 
 type PrimaryServer struct {
 	pb.UnimplementedKVWorkerServer
 	pb.UnimplementedKVBackupServer
-	Hostname         string
-	Port             uint16
-	FilePath         string
-	conn             *zk.Conn
-	kv               *KVStore
-	config           WorkerConfig
-	backupChannels   map[BackupWorkerId]chan *pb.BackupEntry
-	backupAckChannel chan Ack
+	Hostname    string
+	Port        uint16
+	FilePath    string
+	conn        *zk.Conn
+	kv          *KVStore
+	config      WorkerConfig
+	workerCache common.Worker
+	backupCh    chan *pb.BackupEntry
+	lock        sync.Mutex
+	backups     map[string]*BackupRoutine
 }
 
 const (
 	CONFIG_FILENAME = "config.json"
 )
 
-func NewWorkerServer(hostname string, port uint16, filePath string) (*PrimaryServer, error) {
+func NewPrimaryServer(hostname string, port uint16, filePath string) (*PrimaryServer, error) {
 	kv, err := NewKVStore(filePath)
 	if err != nil {
 		return nil, err
 	}
 	return &PrimaryServer{
-		Hostname:       hostname,
-		Port:           port,
-		FilePath:       filePath,
-		kv:             kv,
-		config:         WorkerConfig{},
-		backupChannels: make(map[BackupWorkerId]chan *pb.BackupEntry),
+		Hostname: hostname,
+		Port:     port,
+		FilePath: filePath,
+		kv:       kv,
+		config:   WorkerConfig{},
+		backupCh: make(chan *pb.BackupEntry),
+		backups:  make(map[string]*BackupRoutine),
 	}, nil
+}
+
+// Broadcast backup entry to channels of different backup servers.
+func (s *PrimaryServer) DoBackup(stopChan <-chan struct{}) {
+routine:
+	for {
+		select {
+		case ent := <-s.backupCh:
+			s.lock.Lock()
+			for _, r := range s.backups {
+				r.ch <- ent
+			}
+			s.lock.Unlock()
+		case <-stopChan:
+			break routine
+		}
+	}
 }
 
 func (s *PrimaryServer) Put(_ context.Context, pair *pb.KVPair) (*pb.PutResponse, error) {
@@ -61,9 +106,7 @@ func (s *PrimaryServer) Put(_ context.Context, pair *pb.KVPair) (*pb.PutResponse
 		Key:   pair.Key,
 		Value: pair.Value,
 	}
-	for _, v := range s.backupChannels {
-		v <- &ent
-	}
+	s.backupCh <- &ent
 	s.kv.Put(pair.Key, pair.Value)
 	return &pb.PutResponse{Status: pb.Status_OK}, nil
 }
@@ -88,9 +131,7 @@ func (s *PrimaryServer) Delete(_ context.Context, key *pb.Key) (*pb.DeleteRespon
 		Op:  pb.Operation_DELETE,
 		Key: key.Key,
 	}
-	for _, v := range s.backupChannels {
-		v <- &ent
-	}
+	s.backupCh <- &ent
 	if s.kv.Delete(key.Key) {
 		return &pb.DeleteResponse{Status: pb.Status_OK}, nil
 	} else {
@@ -104,74 +145,6 @@ func (s *PrimaryServer) Checkpoint(_ context.Context, _ *empty.Empty) (*pb.Flush
 		return &pb.FlushResponse{Status: pb.Status_EFAILED}, nil
 	}
 	return &pb.FlushResponse{Status: pb.Status_OK}, nil
-}
-
-func (s *PrimaryServer) Register(_ context.Context, _ *pb.BackupClientAuth) (*pb.BackupClientToken, error) {
-	// TODO add some authentication mechanism
-	id := GetNextBackupWorkerId()
-	s.backupChannels[id] = make(chan *pb.BackupEntry)
-	common.Log().Info("Backup client registered.", zap.Int("token", int(id)))
-	return &pb.BackupClientToken{Id: int32(id)}, nil
-}
-
-// Backup routine
-func (s *PrimaryServer) Backup(srv pb.KVBackup_BackupServer) error {
-	log := common.Log()
-
-	// get backup client's token from context
-	ctx := srv.Context()
-	md, ok := metadata.FromIncomingContext(ctx)
-	warning := "failed to read worker id from metadata context"
-	if !ok {
-		return errors.New(warning)
-	}
-	vals := md.Get(KEY_BACKUP_WORKER_ID)
-	if len(vals) != 1 {
-		return errors.New(warning)
-	}
-	id, err := strconv.Atoi(vals[0])
-	if err != nil {
-		return err
-	}
-	ch, ok := s.backupChannels[BackupWorkerId(id)]
-	if !ok {
-		return errors.New("primary did not register")
-	}
-
-	// use a goroutine to convert srv.Recv() to a channel
-	go func() {
-		for {
-			repl, err := srv.Recv()
-			if err == io.EOF {
-				log.Info("EOF encountered, stop receiving ack.", zap.Int("backup id", id))
-				break
-			} else if err == context.Canceled {
-				log.Info("Cancel signal encountered, stop receiving ack.", zap.Int("backup id", id))
-				break
-			} else if err != nil {
-				log.Error("Backup reply stream received error.",
-					zap.Any("id", id), zap.Error(err))
-				break
-			}
-			s.backupAckChannel <- Ack{
-				Id:      BackupWorkerId(id),
-				Version: repl.Version,
-			}
-		}
-	}()
-	// keep listening to incoming channel and send backup entry to client
-	for {
-		select {
-		case <-ctx.Done():
-			log.Info("Backup client terminated through server context.")
-			return ctx.Err()
-		case ent := <-ch:
-			if err := srv.Send(ent); err != nil {
-				log.Error("Sync failed.", zap.Error(err))
-			}
-		default:
-		}
-	}
 }
 
 // Update configuration. Read configuration if file exists, and generate a new one otherwise.
@@ -201,7 +174,7 @@ func (s *PrimaryServer) updateConfig() error {
 func (s *PrimaryServer) RegisterToZk(conn *zk.Conn) error {
 	log := common.Log()
 
-	// WorkerNode don't have to ensure that path exists.
+	// workers don't have to ensure that path exists.
 	nodePath := path.Join(common.ZK_NODES_ROOT, common.ZK_WORKER_NAME)
 	exists, _, err := conn.Exists(common.ZK_NODES_ROOT)
 	if err != nil {
@@ -234,6 +207,87 @@ func (s *PrimaryServer) RegisterToZk(conn *zk.Conn) error {
 	if err := ioutil.WriteFile(path.Join(s.FilePath, CONFIG_FILENAME), b, 0644); err != nil {
 		return err
 	}
+	// start another goroutine to watch
 	log.Info("Configuration file saved.")
 	return nil
+}
+
+func (s *PrimaryServer) Watch(stopChan <-chan struct{}) {
+	log := common.Log()
+	log.Info("Starting to watch worker znode...", zap.Int("id", int(s.config.Id)))
+	workerNodePath := path.Join(common.ZK_WORKERS_ROOT, strconv.Itoa(int(s.config.Id)))
+	for {
+		exists, _, eventChan, err := s.conn.ExistsW(workerNodePath)
+		if err != nil {
+			log.Error("Failed to watch.", zap.String("path", workerNodePath), zap.Error(err))
+			break
+		}
+		if exists {
+			b, _, err := s.conn.Get(workerNodePath)
+			if err != nil {
+				log.Error("Failed to get znode content.", zap.String("path", workerNodePath), zap.Error(err))
+				return
+			}
+			var worker common.Worker
+			if err := json.Unmarshal(b, &worker); err != nil {
+				log.Error("Invalid content.", zap.String("content", string(b)), zap.Error(err))
+				return
+			}
+			// compare new metadata with local cache
+			// for now we only handle adding backups
+			// TODO handle missing backups
+			log.Info(string(b))
+			if len(worker.Backups) > len(s.workerCache.Backups) {
+				// figure out the new one
+				bak := worker.Backups
+				bak = common.RemoveElements(bak, s.workerCache.Backups...)
+				for _, b := range bak {
+					if err := s.ConnectToBackup(b); err != nil {
+						log.Error("Failed to connect to backup server.", zap.Error(err))
+					} else {
+						log.Info("Successfully connected to new backup server.", zap.String("name", b))
+					}
+				}
+			}
+		}
+		select {
+		case <-eventChan:
+			log.Info("Event captured.")
+		case <-stopChan:
+			break
+		}
+	}
+}
+
+func (s *PrimaryServer) ConnectToBackup(backupNodeName string) error {
+	b, _, err := s.conn.Get(path.Join(common.ZK_NODES_ROOT, backupNodeName))
+	if err != nil {
+		return err
+	}
+	node, err := common.UnmarshalNode(b)
+	if err != nil {
+		return err
+	}
+	switch node.(type) {
+	case *common.BackupWorkerNode:
+		n := node.(*common.BackupWorkerNode)
+		connString := fmt.Sprintf("%s:%d", n.Host.Hostname, n.Host.Port)
+		grpcConn, err := common.ConnectGrpc(connString)
+		if err != nil {
+			return err
+		}
+		routine := BackupRoutine{
+			conn:   pb.NewKVBackupClient(grpcConn),
+			ch:     make(chan *pb.BackupEntry),
+			name:   backupNodeName,
+			stopCh: make(chan struct{}),
+		}
+		go routine.loop()
+		s.lock.Lock()
+		s.backups[backupNodeName] = &routine
+		s.lock.Unlock()
+		return nil
+	default:
+		return errors.New("not a backup node")
+	}
 }

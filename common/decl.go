@@ -15,6 +15,7 @@ const (
 	ZK_WORKER_ID       = "/kv/next_worker_id"
 	ZK_MASTER_NAME     = "master"
 	ZK_WORKER_NAME     = "primary"
+	ZK_BACKUP_NAME     = "backup"
 )
 
 type Node struct {
@@ -45,7 +46,6 @@ type PrimaryWorkerNode struct {
 type BackupWorkerNode struct {
 	Id     WorkerId
 	Host   Node
-	Weight float32
 	Status string
 }
 

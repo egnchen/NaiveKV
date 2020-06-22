@@ -28,9 +28,11 @@ var (
 )
 
 var (
-	server *grpc.Server
-	log    *zap.Logger
-	conn   *zk.Conn
+	server         *grpc.Server
+	log            *zap.Logger
+	conn           *zk.Conn
+	watchStopChan  = make(chan struct{})
+	backupStopChan = make(chan struct{})
 )
 
 // handle ctrl-c gracefully
@@ -40,6 +42,9 @@ func setupCloseHandler() {
 	go func() {
 		<-c
 		log.Info("Ctrl-C captured.")
+		log.Info("Sending stop signals...")
+		close(watchStopChan)
+		close(backupStopChan)
 		if server != nil {
 			log.Info("Gracefully stopping gRPC server...")
 			server.GracefulStop()
@@ -66,7 +71,7 @@ func main() {
 	log.Info("Connected to zookeeper.", zap.String("server", conn.Server()))
 
 	// initialize workerServer server
-	workerServer, err := worker.NewWorkerServer(*hostname, uint16(*port), *filePath)
+	workerServer, err := worker.NewPrimaryServer(*hostname, uint16(*port), *filePath)
 	if err != nil {
 		log.Panic("Failed to initialize workerServer object.", zap.Error(err))
 	}
@@ -75,8 +80,12 @@ func main() {
 		log.Panic("Failed to register to zookeeper.", zap.Error(err))
 	}
 
+	// start watching worker metadata changes, and do backup broadcasting
+	go workerServer.Watch(watchStopChan)
+	go workerServer.DoBackup(backupStopChan)
+
 	// open tcp socket
-	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", *port))
+	listener, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", *port))
 	if err != nil {
 		log.Panic("failed to listen to port.", zap.Int("port", *port), zap.Error(err))
 	}
@@ -84,7 +93,6 @@ func main() {
 	server := common.NewGrpcServer()
 	pb.RegisterKVWorkerServer(server, workerServer)
 	pb.RegisterKVWorkerInternalServer(server, workerServer)
-	pb.RegisterKVBackupServer(server, workerServer)
 	defer server.GracefulStop()
 	if err := server.Serve(listener); err != nil {
 		log.Error("gRPC server raised error.", zap.Error(err))

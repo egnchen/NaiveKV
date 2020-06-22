@@ -9,16 +9,7 @@ option go_package = "proto";
 import "common.proto";
 
 service KVBackup {
-  rpc Register(BackupClientAuth) returns (BackupClientToken) {}
-  rpc Backup(stream BackupReply) returns (stream BackupEntry) {}
-}
-
-message BackupClientAuth {
-  // empty message, may be add some tokens or keys here
-}
-
-message BackupClientToken {
-  int32 id = 1;
+  rpc Backup(stream BackupEntry) returns (BackupReply) {}
 }
 
 message BackupEntry {

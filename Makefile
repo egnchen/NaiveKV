@@ -20,13 +20,10 @@ client:
 zk-cli:
 	docker run -it --rm --link kv-zookeeper:zookeeper eyek/kv-zookeeper:1.0 zkCli.sh -server zookeeper
 
-kill-master:
-	sudo kill -9 $(shell ps aux | grep cmd/master/main.go | head -1 | awk '{print $$2}')
-	sudo kill -9 $(shell lsof -t -i:7899)
+kill-port:
+	sudo kill -9 $(shell lsof -t -i:${port})
 
 PROTO_FILES := $(wildcard proto/*.proto)
-
-# some actual build tarets
+.PHONY: proto
 proto: $(PROTO_FILES)
-	cd proto
-	protoc *.proto --go_out=plugins=grpc:.
+	cd proto; protoc *.proto --go_out=plugins=grpc:.
