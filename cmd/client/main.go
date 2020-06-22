@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/eyeKill/KV/common"
 	pb "github.com/eyeKill/KV/proto"
 	"github.com/golang/protobuf/ptypes/empty"
 	"go.uber.org/zap"
@@ -51,7 +52,7 @@ func getConnectionString(key string) (string, error) {
 	k := pb.Key{Key: key}
 	resp, err := masterClient.GetWorkerByKey(ctx, &k)
 	if err != nil {
-		log.Warn("Failed to get worker node.",
+		log.Warn("Failed to get primary node.",
 			zap.String("key", key), zap.Error(err))
 		return "", err
 	}
@@ -73,16 +74,9 @@ func getWorkerClient(key string) (pb.KVWorkerClient, error) {
 	}
 	ret, ok := workerClients[connString]
 	if !ok {
-		// connect
-		var opts []grpc.DialOption
-		opts = append(opts, grpc.WithInsecure())
-		opts = append(opts, grpc.WithBlock())
-
-		log.Info("Dialing...", zap.String("server", connString))
-		conn, err := grpc.Dial(connString, opts...)
+		conn, err := common.ConnectGrpc(connString)
 		if err != nil {
-			log.Warn("Failed to dail.",
-				zap.String("server", connString), zap.Error(err))
+			log.Error("Failed to connect to primary.", zap.Error(err))
 			return nil, err
 		}
 		log.Info("Connected.", zap.Any("conn", conn))

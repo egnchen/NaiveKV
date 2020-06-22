@@ -10,7 +10,6 @@ import "common.proto";
 
 service KVMaster {
   rpc GetWorkerByKey(Key) returns (GetWorkerResponse) {}
-  rpc GetWorkerById(WorkerId) returns (GetWorkerResponse) {}
 }
 
 message GetWorkerResponse {

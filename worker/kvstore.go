@@ -107,9 +107,15 @@ func (kv *KVStore) writeLog(content string) error {
 }
 
 func NewKVStore(pathString string) (*KVStore, error) {
-	// create a log file & slot file
 	log := common.Log()
+	// create the path if not exist
+	if _, err := os.Stat(pathString); os.IsNotExist(err) {
+		if err := os.Mkdir(pathString, 0755); err != nil {
+			return nil, err
+		}
+	}
 
+	// create a log file & slot file
 	logFileName := path.Join(pathString, LOG_FILENAME)
 	slotFileName := path.Join(pathString, SLOT_FILENAME)
 	var logFile, slotFile *os.File

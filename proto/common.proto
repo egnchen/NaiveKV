@@ -23,7 +23,7 @@ message WorkerId {
 }
 
 enum Operation {
-  GET = 0;
+  GET = 0;  // which shouldn't present itself in backup
   PUT = 1;
   DELETE = 2;
 }

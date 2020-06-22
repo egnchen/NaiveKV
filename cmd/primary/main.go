@@ -1,5 +1,5 @@
-// Worker for the distributed KV store
-// Worker is data node. It stores the actual KV hashmap and responses to
+// WorkerNode for the distributed KV store
+// WorkerNode is data node. It stores the actual KV hashmap and responses to
 // clients' requests
 package main
 
@@ -84,6 +84,7 @@ func main() {
 	server := common.NewGrpcServer()
 	pb.RegisterKVWorkerServer(server, workerServer)
 	pb.RegisterKVWorkerInternalServer(server, workerServer)
+	pb.RegisterKVBackupServer(server, workerServer)
 	defer server.GracefulStop()
 	if err := server.Serve(listener); err != nil {
 		log.Error("gRPC server raised error.", zap.Error(err))
