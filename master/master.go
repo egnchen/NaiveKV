@@ -229,6 +229,7 @@ watchLoop:
 		log.Info("Writing primary metadata back to zookeeper...")
 		var ops []interface{}
 		for id, w := range update {
+			log.Sugar().Infof("Updating %d to %+v", id, *w)
 			dat, err := json.Marshal(w)
 			if err != nil {
 				log.Error("Failed to marshall metadata.", zap.Error(err))

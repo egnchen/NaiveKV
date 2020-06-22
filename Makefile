@@ -23,3 +23,10 @@ zk-cli:
 kill-master:
 	sudo kill -9 $(shell ps aux | grep cmd/master/main.go | head -1 | awk '{print $$2}')
 	sudo kill -9 $(shell lsof -t -i:7899)
+
+PROTO_FILES := $(wildcard proto/*.proto)
+
+# some actual build tarets
+proto: $(PROTO_FILES)
+	cd proto
+	protoc *.proto --go_out=plugins=grpc:.

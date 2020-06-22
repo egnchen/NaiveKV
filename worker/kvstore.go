@@ -48,11 +48,13 @@ func (kv *KVStore) Put(key string, value string) {
 	kv.base[key] = value
 }
 
+// make sure that key is removed from kvStore,
+// regardless of whether it exists beforehand or not.
 func (kv *KVStore) Delete(key string) (ok bool) {
+	kv.rwLock.Lock()
+	defer kv.rwLock.Unlock()
 	_, ok = kv.base[key]
 	if ok {
-		kv.rwLock.Lock()
-		defer kv.rwLock.Unlock()
 		logEntry := fmt.Sprintf("del %q\n", key)
 		if err := kv.writeLog(logEntry); err != nil {
 			common.Log().Panic("Failed to flush log.",

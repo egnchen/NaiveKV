@@ -29,4 +29,5 @@ message BackupEntry {
 
 message BackupReply {
   Status status = 1;
+  int32 version = 2;
 }

@@ -26,7 +26,7 @@ const _ = proto.ProtoPackageIsVersion3 // please upgrade the proto package
 
 type GetWorkerResponse struct {
 	Status               Status   `protobuf:"varint,1,opt,name=status,proto3,enum=kv.proto.Status" json:"status,omitempty"`
-	Worker               *Worker  `protobuf:"bytes,2,opt,name=primary,proto3" json:"primary,omitempty"`
+	Worker               *Worker  `protobuf:"bytes,2,opt,name=worker,proto3" json:"worker,omitempty"`
 	XXX_NoUnkeyedLiteral struct{} `json:"-"`
 	XXX_unrecognized     []byte   `json:"-"`
 	XXX_sizecache        int32    `json:"-"`

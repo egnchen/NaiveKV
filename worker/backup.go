@@ -107,8 +107,8 @@ func (s *BackupServer) DoBackup() {
 		ent, err := stream.Recv()
 		if err == io.EOF {
 			break
-		} else {
-			log.Panic("Stream failed.", zap.Error(err))
+		} else if err != nil {
+			log.Error("Stream failed.", zap.Error(err))
 		}
 		switch ent.Op {
 		case pb.Operation_PUT:

@@ -21,29 +21,35 @@ protoc *.proto --go_out=plugins=grpc:.
 This project uses zookeeper to maintain metadata, so start zookeeper first:
 
 ```bash
-docker run --name kv-zookeeper --restart always -d eyek/kv-zookeeper:1.0
+make zookeeper
 ```
 
 To start master server:
 
 ```bash
-go run cmd/master/main.go
+make master
 ```
 
-To start worker server:
+To start primary worker server with id `x`:
 
 ```bash
-go run cmd/worker/main.go
+make primary id=x
+```
+
+To start a backup server with id `x`:
+
+```bash
+make backup id=x
 ```
 
 To start a client, which is a REPL:
 
 ```bash
-go run cmd/client/main.go
+make client
 ```
 
 To start a zookeeper CLI for debug:
 
 ```bash
-docker run -it --rm --link kv-zookeeper:zookeeper eyek/kv-zookeeper:1.0 zkCli.sh -server zookeeper
+make zk-cli
 ```

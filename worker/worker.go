@@ -17,16 +17,22 @@ import (
 	"strconv"
 )
 
+type Ack struct {
+	Id      BackupWorkerId
+	Version int32
+}
+
 type PrimaryServer struct {
 	pb.UnimplementedKVWorkerServer
 	pb.UnimplementedKVBackupServer
-	Hostname    string
-	Port        uint16
-	FilePath    string
-	conn        *zk.Conn
-	kv          *KVStore
-	config      WorkerConfig
-	backupChans map[BackupWorkerId]chan *pb.BackupEntry
+	Hostname         string
+	Port             uint16
+	FilePath         string
+	conn             *zk.Conn
+	kv               *KVStore
+	config           WorkerConfig
+	backupChannels   map[BackupWorkerId]chan *pb.BackupEntry
+	backupAckChannel chan Ack
 }
 
 const (
@@ -39,16 +45,25 @@ func NewWorkerServer(hostname string, port uint16, filePath string) (*PrimarySer
 		return nil, err
 	}
 	return &PrimaryServer{
-		Hostname:    hostname,
-		Port:        port,
-		FilePath:    filePath,
-		kv:          kv,
-		config:      WorkerConfig{},
-		backupChans: make(map[BackupWorkerId]chan *pb.BackupEntry),
+		Hostname:       hostname,
+		Port:           port,
+		FilePath:       filePath,
+		kv:             kv,
+		config:         WorkerConfig{},
+		backupChannels: make(map[BackupWorkerId]chan *pb.BackupEntry),
 	}, nil
 }
 
 func (s *PrimaryServer) Put(_ context.Context, pair *pb.KVPair) (*pb.PutResponse, error) {
+	// commit to slave first
+	ent := pb.BackupEntry{
+		Op:    pb.Operation_PUT,
+		Key:   pair.Key,
+		Value: pair.Value,
+	}
+	for _, v := range s.backupChannels {
+		v <- &ent
+	}
 	s.kv.Put(pair.Key, pair.Value)
 	return &pb.PutResponse{Status: pb.Status_OK}, nil
 }
@@ -69,8 +84,14 @@ func (s *PrimaryServer) Get(_ context.Context, key *pb.Key) (*pb.GetResponse, er
 }
 
 func (s *PrimaryServer) Delete(_ context.Context, key *pb.Key) (*pb.DeleteResponse, error) {
-	ok := s.kv.Delete(key.Key)
-	if ok {
+	ent := pb.BackupEntry{
+		Op:  pb.Operation_DELETE,
+		Key: key.Key,
+	}
+	for _, v := range s.backupChannels {
+		v <- &ent
+	}
+	if s.kv.Delete(key.Key) {
 		return &pb.DeleteResponse{Status: pb.Status_OK}, nil
 	} else {
 		return &pb.DeleteResponse{Status: pb.Status_ENOENT}, nil
@@ -88,12 +109,16 @@ func (s *PrimaryServer) Checkpoint(_ context.Context, _ *empty.Empty) (*pb.Flush
 func (s *PrimaryServer) Register(_ context.Context, _ *pb.BackupClientAuth) (*pb.BackupClientToken, error) {
 	// TODO add some authentication mechanism
 	id := GetNextBackupWorkerId()
-	s.backupChans[id] = make(chan *pb.BackupEntry)
+	s.backupChannels[id] = make(chan *pb.BackupEntry)
+	common.Log().Info("Backup client registered.", zap.Int("token", int(id)))
 	return &pb.BackupClientToken{Id: int32(id)}, nil
 }
 
+// Backup routine
 func (s *PrimaryServer) Backup(srv pb.KVBackup_BackupServer) error {
 	log := common.Log()
+
+	// get backup client's token from context
 	ctx := srv.Context()
 	md, ok := metadata.FromIncomingContext(ctx)
 	warning := "failed to read worker id from metadata context"
@@ -108,37 +133,42 @@ func (s *PrimaryServer) Backup(srv pb.KVBackup_BackupServer) error {
 	if err != nil {
 		return err
 	}
-	ch, ok := s.backupChans[BackupWorkerId(id)]
+	ch, ok := s.backupChannels[BackupWorkerId(id)]
 	if !ok {
 		return errors.New("primary did not register")
 	}
 
-	recvCh := make(chan *pb.BackupReply)
 	// use a goroutine to convert srv.Recv() to a channel
 	go func() {
 		for {
 			repl, err := srv.Recv()
 			if err == io.EOF {
+				log.Info("EOF encountered, stop receiving ack.", zap.Int("backup id", id))
+				break
+			} else if err == context.Canceled {
+				log.Info("Cancel signal encountered, stop receiving ack.", zap.Int("backup id", id))
 				break
 			} else if err != nil {
 				log.Error("Backup reply stream received error.",
 					zap.Any("id", id), zap.Error(err))
 				break
 			}
-			recvCh <- repl
+			s.backupAckChannel <- Ack{
+				Id:      BackupWorkerId(id),
+				Version: repl.Version,
+			}
 		}
 	}()
+	// keep listening to incoming channel and send backup entry to client
 	for {
 		select {
 		case <-ctx.Done():
-			log.Info("Backup server terminated through server context.")
+			log.Info("Backup client terminated through server context.")
 			return ctx.Err()
 		case ent := <-ch:
 			if err := srv.Send(ent); err != nil {
 				log.Error("Sync failed.", zap.Error(err))
 			}
-		case <-recvCh:
-			// TODO deal with reply
 		default:
 		}
 	}
