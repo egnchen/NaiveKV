@@ -54,7 +54,7 @@ type PrimaryServer struct {
 	Port        uint16
 	FilePath    string
 	conn        *zk.Conn
-	kv          *KVStore
+	kv          KVStore
 	config      WorkerConfig
 	workerCache common.Worker
 	backupCh    chan *pb.BackupEntry

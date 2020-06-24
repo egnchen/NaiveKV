@@ -2,9 +2,10 @@ package common_test
 
 import (
 	"encoding/json"
+	"testing"
+
 	"github.com/eyeKill/KV/common"
 	"github.com/stretchr/testify/assert"
-	"testing"
 )
 
 func TestMarshalMasterNode(t *testing.T) {

@@ -164,4 +164,6 @@ type Worker struct {
 	// here primary & backup nodes are represented by corresponding znode names.
 	Primary string
 	Backups []string
+	// this field is for internal use only
+	visited bool `json:"-"`
 }

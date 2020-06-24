@@ -10,10 +10,10 @@ type RouletteAllocator struct{}
 // This method is based on roulette algorithm
 // We use a better strategy here, create an array of slot ids and shuffle it
 // and then split the array according to their weights
-func (r RouletteAllocator) AllocateSlots(ring *HashSlotRing,
-	oldWorkers map[common.WorkerId]*common.Worker, newWorkers map[common.WorkerId]*common.Worker) (MigrationTable, error) {
+func (r RouletteAllocator) AllocateSlots(ring *common.HashSlotRing,
+	oldWorkers map[common.WorkerId]*common.Worker, newWorkers map[common.WorkerId]*common.Worker) (common.MigrationTable, error) {
 	slog := common.SugaredLog()
-	table := MigrationTable{}
+	table := common.MigrationTable{}
 
 	if len(oldWorkers) == 0 {
 		slog.Info("Initializing new hash ring...")
@@ -70,7 +70,7 @@ func (r RouletteAllocator) selectFrom(slots []common.SlotId, count int) []common
 }
 
 // distribute slots to different new workers according to their weights
-func (r RouletteAllocator) distributeTo(slots []common.SlotId, table *MigrationTable, newWorkers map[common.WorkerId]*common.Worker) {
+func (r RouletteAllocator) distributeTo(slots []common.SlotId, table *common.MigrationTable, newWorkers map[common.WorkerId]*common.Worker) {
 	slog := common.SugaredLog()
 	var totalWeight int64 = 0
 	for _, n := range newWorkers {

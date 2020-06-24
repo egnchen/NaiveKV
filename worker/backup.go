@@ -22,7 +22,7 @@ type BackupServer struct {
 	primary    *common.Node
 	conn       *zk.Conn
 	backupConn pb.KVBackupClient
-	kv         *KVStore
+	kv         KVStore
 }
 
 func NewBackupWorker(hostname string, port uint16, filePath string, id common.WorkerId) (*BackupServer, error) {
