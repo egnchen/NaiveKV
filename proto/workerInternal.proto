@@ -1,4 +1,4 @@
-// gRPC service for KV data worker internal logics
+// gRPC service for KV data worker internal logic
 // These interfaces should not be exposed to the client
 // @author Eugene Chen cyj205@sjtu.edu.cn
 
@@ -12,6 +12,11 @@ import "google/protobuf/empty.proto";
 
 service KVWorkerInternal {
   rpc checkpoint(google.protobuf.Empty) returns (FlushResponse) {}
+  rpc migrate(stream BackupEntry) returns (MigrationResponse) {}
+}
+
+message MigrationResponse {
+  Status status = 1;
 }
 
 message FlushResponse {

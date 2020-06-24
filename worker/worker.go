@@ -1,5 +1,7 @@
 package worker
 
+// primary worker control plane
+
 import (
 	"context"
 	"encoding/json"
@@ -47,6 +49,12 @@ backupRoutine:
 	}
 }
 
+type MigrationRoutine struct {
+	name    string
+	conn    pb.KVWorkerInternalServer
+	divider func(key string) bool
+}
+
 type PrimaryServer struct {
 	pb.UnimplementedKVWorkerServer
 	pb.UnimplementedKVBackupServer
@@ -60,6 +68,10 @@ type PrimaryServer struct {
 	backupCh    chan *pb.BackupEntry
 	lock        sync.Mutex
 	backups     map[string]*BackupRoutine
+}
+
+func (s *PrimaryServer) Migrate(server pb.KVWorkerInternal_MigrateServer) error {
+	panic("Implement me!")
 }
 
 const (
@@ -175,7 +187,7 @@ func (s *PrimaryServer) RegisterToZk(conn *zk.Conn) error {
 	log := common.Log()
 
 	// workers don't have to ensure that path exists.
-	nodePath := path.Join(common.ZK_NODES_ROOT, common.ZK_WORKER_NAME)
+	nodePath := path.Join(common.ZK_NODES_ROOT, common.ZK_PRIMARY_NAME)
 	exists, _, err := conn.Exists(common.ZK_NODES_ROOT)
 	if err != nil {
 		return err
@@ -234,20 +246,27 @@ func (s *PrimaryServer) Watch(stopChan <-chan struct{}) {
 				return
 			}
 			// compare new metadata with local cache
-			// for now we only handle adding backups
-			// TODO handle missing backups
+			// TODO handle missing backups, downed backups
 			log.Info(string(b))
 			if len(worker.Backups) > len(s.workerCache.Backups) {
 				// figure out the new one
-				bak := worker.Backups
-				bak = common.RemoveElements(bak, s.workerCache.Backups...)
-				for _, b := range bak {
-					if err := s.ConnectToBackup(b); err != nil {
-						log.Error("Failed to connect to backup server.", zap.Error(err))
-					} else {
-						log.Info("Successfully connected to new backup server.", zap.String("name", b))
+				for _, v := range worker.Backups {
+					for _, v2 := range s.workerCache.Backups {
+						if v.Name == v2.Name {
+							// found
+							v2.Valid = v.Valid
+							goto found
+						}
 					}
+					// new server
+					if err := s.ConnectToBackup(v.Name); err != nil {
+						log.Error("Failed to connect to backup server.", zap.String("name", v.Name))
+					} else {
+						log.Info("Connected to backup server.", zap.String("name", v.Name))
+					}
+				found: // continue
 				}
+
 			}
 		}
 		select {

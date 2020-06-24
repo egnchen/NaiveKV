@@ -3,12 +3,14 @@ package master
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"github.com/eyeKill/KV/common"
 	pb "github.com/eyeKill/KV/proto"
 	"github.com/samuel/go-zookeeper/zk"
 	"go.uber.org/zap"
-	"hash/crc32"
 	"path"
+	"reflect"
 	"strconv"
 	"sync"
 )
@@ -20,10 +22,10 @@ type Server struct {
 
 	conn      *zk.Conn
 	rwLock    sync.RWMutex
-	slots     HashSlotRing
-	allocator HashSlotAllocator
-	primaries map[string]*common.PrimaryWorkerNode
-	backups   map[string]*common.BackupWorkerNode
+	slots     common.HashSlotRing
+	allocator common.HashSlotAllocator
+	primaries *common.ZNodeChildrenCache
+	backups   *common.ZNodeChildrenCache
 	workers   map[common.WorkerId]*common.Worker
 }
 
@@ -31,38 +33,106 @@ func NewMasterServer(hostname string, port uint16) Server {
 	return Server{
 		Hostname:  hostname,
 		Port:      port,
-		slots:     NewHashSlotRing(DEFAULT_SLOT_COUNT),
+		slots:     common.NewHashSlotRing(common.DEFAULT_SLOT_COUNT),
 		allocator: RouletteAllocator{},
-		primaries: make(map[string]*common.PrimaryWorkerNode),
-		backups:   make(map[string]*common.BackupWorkerNode),
 		workers:   make(map[common.WorkerId]*common.Worker),
+	}
+}
+
+// get cache
+func (m *Server) getPrimaryCache(key string) (*common.PrimaryWorkerNode, error) {
+	var ret common.PrimaryWorkerNode
+	b, ok := m.primaries.Get(key)
+	if !ok {
+		return nil, errors.New("cache entry not found")
+	}
+	if err := json.Unmarshal(b, &ret); err != nil {
+		return nil, err
+	}
+	return &ret, nil
+}
+
+func (m *Server) getBackupCache(key string) (*common.BackupWorkerNode, error) {
+	var ret common.BackupWorkerNode
+	b, ok := m.backups.Get(key)
+	if !ok {
+		return nil, errors.New("cache entry not found")
+	}
+	if err := json.Unmarshal(b, &ret); err != nil {
+		return nil, err
+	}
+	return &ret, nil
+}
+
+func getPrimary(content []byte) (*common.PrimaryWorkerNode, error) {
+	node, err := common.UnmarshalNode(content)
+	if err != nil {
+		return nil, err
+	}
+	switch node.(type) {
+	case *common.PrimaryWorkerNode:
+		return node.(*common.PrimaryWorkerNode), nil
+	default:
+		return nil, errors.New(fmt.Sprintf("Wrong type, expecting PrimaryWorkerNode, found %s", reflect.TypeOf(node)))
+	}
+}
+
+func getBackup(content []byte) (*common.BackupWorkerNode, error) {
+	node, err := common.UnmarshalNode(content)
+	if err != nil {
+		return nil, err
+	}
+	switch node.(type) {
+	case *common.BackupWorkerNode:
+		return node.(*common.BackupWorkerNode), nil
+	default:
+		return nil, errors.New(fmt.Sprintf("Wrong type, expecting BackupWorkerNode, found %s", reflect.TypeOf(node)))
 	}
 }
 
 // gRPC call handler
 func (m *Server) GetWorkerByKey(_ context.Context, key *pb.Key) (*pb.GetWorkerResponse, error) {
+	log := common.Log()
 	m.rwLock.RLock()
-	h := crc32.ChecksumIEEE([]byte(key.Key))
-	id := m.slots.Slots[h%uint32(m.slots.Len())]
-	m.rwLock.RUnlock()
-	if id == 0 {
-		return &pb.GetWorkerResponse{
-			Status: pb.Status_ENOSERVER,
-		}, nil
-	} else {
-		primary, ok := m.primaries[m.workers[id].Primary]
-		if !ok {
-			common.Log().Panic("Inconsistency encountered.", zap.Uint16("id", uint16(id)),
-				zap.String("chName", m.workers[id].Primary))
+	defer m.rwLock.RUnlock()
+	id := m.slots.GetWorkerId(key.Key)
+	if id > 0 {
+		if m.workers[id].Primary.Valid {
+			primary, err := m.getPrimaryCache(m.workers[id].Primary.Name)
+			if err != nil {
+				log.Error("Failed to get primary node.", zap.Error(err))
+			} else {
+				return &pb.GetWorkerResponse{
+					Status: pb.Status_OK,
+					Worker: &pb.Worker{
+						Hostname: primary.Host.Hostname,
+						Port:     int32(primary.Host.Port),
+					},
+				}, nil
+			}
 		}
-		return &pb.GetWorkerResponse{
-			Status: pb.Status_OK,
-			Worker: &pb.Worker{
-				Hostname: primary.Host.Hostname,
-				Port:     int32(primary.Host.Port),
-			},
-		}, nil
+		// try backups
+		for _, b := range m.workers[id].Backups {
+			if b.Valid {
+				backup, err := m.getBackupCache(b.Name)
+				if err != nil {
+					log.Error("Failed to get backup node.", zap.Error(err))
+				} else {
+					return &pb.GetWorkerResponse{
+						Status: pb.Status_OK,
+						Worker: &pb.Worker{
+							Hostname: backup.Host.Hostname,
+							Port:     int32(backup.Host.Port),
+						},
+					}, nil
+				}
+			}
+		}
 	}
+	return &pb.GetWorkerResponse{
+		Status: pb.Status_ENOSERVER,
+		Worker: nil,
+	}, nil
 }
 
 func (m *Server) RegisterToZk(conn *zk.Conn) error {
@@ -95,6 +165,18 @@ func (m *Server) RegisterToZk(conn *zk.Conn) error {
 		log.Panic("Failed to register itself to zookeeper.", zap.Error(err))
 	}
 	m.conn = conn
+
+	// now register our cache objects...
+	primary, err := common.NewZnodeChildrenCache(common.ZK_NODES_ROOT, common.ZK_PRIMARY_NAME, conn)
+	if err != nil {
+		log.Panic("Failed to create children cache for primaries.", zap.Error(err))
+	}
+	m.primaries = primary
+	backup, err := common.NewZnodeChildrenCache(common.ZK_NODES_ROOT, common.ZK_BACKUP_NAME, conn)
+	if err != nil {
+		log.Panic("Failed to create children cache for backups.", zap.Error(err))
+	}
+	m.backups = backup
 	return nil
 }
 
@@ -102,135 +184,105 @@ func (m *Server) RegisterToZk(conn *zk.Conn) error {
 func (m *Server) Watch(stopChan <-chan struct{}) {
 	log := common.Log()
 	log.Info("Starting watch loop.")
+	pStop := make(chan struct{})
+	bStop := make(chan struct{})
+	go m.primaries.Watch(pStop)
+	go m.backups.Watch(bStop)
 
 watchLoop:
 	for {
-		children, _, eventChan, err := m.conn.ChildrenW(common.ZK_NODES_ROOT)
-		if err != nil {
-			log.Info("Error occurred while watching nodes dir.", zap.Error(err))
-			continue
-		}
-
-		// contents under ZK_NODES_ROOT will not change
-		// we only need to track creating/deleting of individual nodes
-		// log changes locally
-		lostPrimaries := make(map[string]*common.PrimaryWorkerNode)
-		for k, v := range m.primaries {
-			lostPrimaries[k] = v
-		}
-		lostBackups := make(map[string]*common.BackupWorkerNode)
-		for k, v := range m.backups {
-			lostBackups[k] = v
-		}
-		var newPrimaries = make(map[string]*common.PrimaryWorkerNode)
-		var newBackups = make(map[string]*common.BackupWorkerNode)
-
-		for _, chName := range children {
-			chPath := path.Join(common.ZK_NODES_ROOT, chName)
-			b, _, err := m.conn.Get(chPath)
+		// dirty WorkerNodes
+		updates := make(map[common.WorkerId]struct{})
+		select {
+		case updated := <-m.primaries.AddChan:
+			primary, err := getPrimary(updated.Content)
 			if err != nil {
-				log.Warn("Failed to retrieve data.", zap.String("path", chPath))
-				continue
+				log.Error("Failed to get primary.", zap.Error(err))
 			}
-			n, err := common.UnmarshalNode(b)
+			// add new worker to worker set
+			newWorkers := map[common.WorkerId]*common.Worker{
+				primary.Id: {
+					Id:     primary.Id,
+					Weight: primary.Weight,
+					Primary: common.NodeEntry{
+						Name:  updated.Name,
+						Valid: true,
+					},
+					Backups: nil,
+				},
+			}
+			// do migration
+			// TODO make this async
+			table, err := m.allocateSlots(newWorkers)
 			if err != nil {
-				log.Warn("Data invalid.", zap.String("path", chPath), zap.ByteString("content", b))
-				continue
+				log.Error("Failed to calculate migration table.", zap.Error(err))
 			}
-			switch n.(type) {
-			case *common.MasterNode:
-				log.Warn("Found master node under ZK_NODES_ROOT", zap.String("name", chName))
-				continue
-			case *common.PrimaryWorkerNode:
-				node := n.(*common.PrimaryWorkerNode)
-				if _, ok := lostPrimaries[chName]; ok {
-					delete(lostPrimaries, chName)
-					continue
-				} else {
-					newPrimaries[chName] = node
-				}
-			case *common.BackupWorkerNode:
-				node := n.(*common.BackupWorkerNode)
-				if _, ok := lostBackups[chName]; ok {
-					delete(lostBackups, chName)
-					continue
-				} else {
-					newBackups[chName] = node
-				}
+			m.migrate(table)
+			// add new workers to primary table
+			m.rwLock.Lock()
+			// TODO persist migration table into zookeeper
+			for k, v := range newWorkers {
+				m.workers[k] = v
+				updates[k] = struct{}{}
 			}
-		}
-		log.Info("Fetched update from zookeeper.")
+			m.rwLock.Unlock()
+		case updated := <-m.backups.AddChan:
+			// just add it to the configuration :)
+			backup, err := getBackup(updated.Content)
+			if err != nil {
+				log.Error("Failed to get backup.", zap.Error(err))
+			}
+			m.rwLock.Lock()
 
-		update := make(map[common.WorkerId]*common.Worker)
-		// do migration according to lost & new nodes
-		for chName, node := range lostPrimaries {
-			log.Info("Primary down detected.",
-				zap.String("name", chName), zap.Uint16("id", uint16(node.Id)))
-			cpy := *m.workers[node.Id]
-			cpy.Primary = ""
-			update[node.Id] = &cpy
-			// TODO bump a backup node up
-		}
-		for chName, node := range lostBackups {
-			log.Info("Backup down detected.",
-				zap.String("name", chName), zap.Uint16("id", uint16(node.Id)))
-			if _, ok := update[node.Id]; !ok {
-				cpy := *m.workers[node.Id]
-				update[node.Id] = &cpy
+			m.workers[backup.Id].Backups = append(m.workers[backup.Id].Backups, common.NodeEntry{
+				Name:  updated.Name,
+				Valid: true,
+			})
+			updates[backup.Id] = struct{}{}
+			m.rwLock.Unlock()
+		case updated := <-m.primaries.RemoveChan:
+			// we do not support removing workers for now, so primary have to stay intact
+			// just set the primary to invalid
+			primary, err := getPrimary(updated.Content)
+			if err != nil {
+				log.Error("Failed to get primary.", zap.Error(err))
 			}
-			// modify in place
-			update[node.Id].Backups = common.RemoveElements(update[node.Id].Backups, chName)
-		}
-		newWorkers := make(map[common.WorkerId]*common.Worker)
-		for chName, node := range newPrimaries {
-			log.Info("New primary detected.", zap.String("name", chName), zap.Uint16("id", uint16(node.Id)))
-			update[node.Id] = &common.Worker{
-				Id:      node.Id,
-				Weight:  node.Weight,
-				Primary: chName,
-				Backups: nil,
+			m.rwLock.Lock()
+			if m.workers[primary.Id].Primary.Name != updated.Name {
+				log.Error("Inconsistency.", zap.String("have", m.workers[primary.Id].Primary.Name),
+					zap.String("got", updated.Name))
 			}
-			newWorkers[node.Id] = update[node.Id]
-		}
-		for chName, node := range newBackups {
-			// TODO what if it is doing migration?
-			log.Info("New backup detected.", zap.String("name", chName), zap.Uint16("id", uint16(node.Id)))
-			if _, ok := m.workers[node.Id]; !ok {
-				if _, ok := update[node.Id]; !ok {
-					log.Error("Inconsistency: Backup have an invalid worker id.",
-						zap.Int("id", int(node.Id)), zap.String("chName", chName))
-					continue
-				} else {
-					// update entry in update[node.Id]
-					update[node.Id].Backups = append(update[node.Id].Backups, chName)
+			m.workers[primary.Id].Primary.Valid = false
+			updates[primary.Id] = struct{}{}
+			m.rwLock.Unlock()
+		case updated := <-m.backups.RemoveChan:
+			backup, err := getBackup(updated.Content)
+			if err != nil {
+				log.Error("Failed to get backup.", zap.Error(err))
+			}
+			m.rwLock.Lock()
+			for _, n := range m.workers[backup.Id].Backups {
+				if n.Name == updated.Name {
+					n.Valid = false
+					updates[backup.Id] = struct{}{}
+					break
 				}
-			} else {
-				cpy := *m.workers[node.Id]
-				cpy.Backups = append(cpy.Backups, chName)
-				update[node.Id] = &cpy
 			}
-		}
+			m.rwLock.Unlock()
 
-		// allocate slots for new primaries
-		table, err := m.allocateSlots(newWorkers)
-		if err != nil {
-			log.Error("Failed to calculate migration table.", zap.Error(err))
+		case <-stopChan:
+			log.Info("Stop signal received, exiting watch loop...")
+			close(pStop)
+			close(bStop)
+			break watchLoop
 		}
-		m.migrate(table)
-		// add new workers to primary table
-		m.rwLock.Lock()
-		for k, v := range newWorkers {
-			m.workers[k] = v
-		}
-		m.rwLock.Unlock()
-
 		// modify nodes persisted in zookeeper
 		m.rwLock.RLock()
 		log.Info("Writing primary metadata back to zookeeper...")
 		var ops []interface{}
-		for id, w := range update {
-			log.Sugar().Infof("Updating %d to %+v", id, *w)
-			dat, err := json.Marshal(w)
+		for id := range updates {
+			log.Sugar().Infof("Updating %d to %+v", id, m.workers[id])
+			dat, err := json.Marshal(m.workers[id])
 			if err != nil {
 				log.Error("Failed to marshall metadata.", zap.Error(err))
 			}
@@ -247,53 +299,29 @@ watchLoop:
 		for i, r := range resp {
 			if r.Error != nil {
 				log.Error("Failed to rewrite single node.",
-					zap.Any("request", ops[i]), zap.String("response", r.String))
+					zap.Any("request", ops[i]), zap.String("response", r.String), zap.Error(r.Error))
 			}
 		}
 		m.rwLock.RUnlock()
 
 		// COMMIT POINT
-		// overwrite local cache
-		for chName := range lostPrimaries {
-			delete(m.primaries, chName)
-		}
-		for chName := range lostBackups {
-			delete(m.backups, chName)
-		}
-		for chName, node := range newPrimaries {
-			m.primaries[chName] = node
-		}
-		for chName, node := range newBackups {
-			m.backups[chName] = node
-		}
-		for id, worker := range update {
-			m.workers[id] = worker
-		}
 		log.Sugar().Info(m.primaries)
 		log.Sugar().Info(m.backups)
-
-		select {
-		case event := <-eventChan:
-			log.Sugar().Infof("Received event %v", event)
-		case <-stopChan:
-			log.Info("Stop signal received, exiting watch loop...")
-			break watchLoop
-		}
 	}
 }
 
-func (m *Server) allocateSlots(newWorkers map[common.WorkerId]*common.Worker) (*SlotMigration, error) {
+func (m *Server) allocateSlots(newWorkers map[common.WorkerId]*common.Worker) (*common.SlotMigration, error) {
 	table, err := m.allocator.AllocateSlots(&m.slots, m.workers, newWorkers)
 	if err != nil {
 		return nil, err
 	}
-	return &SlotMigration{
+	return &common.SlotMigration{
 		Version: m.slots.Version + 1,
 		Table:   table,
 	}, nil
 }
 
-func (m *Server) migrate(migration *SlotMigration) {
+func (m *Server) migrate(migration *common.SlotMigration) {
 	log := common.SugaredLog()
 	// update the slot table
 	if migration.Version != m.slots.Version+1 {

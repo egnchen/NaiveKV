@@ -14,7 +14,7 @@ const (
 	ZK_MIGRATIONS_ROOT = "/kv/migrations"
 	ZK_WORKER_ID       = "/kv/next_worker_id"
 	ZK_MASTER_NAME     = "master"
-	ZK_WORKER_NAME     = "primary"
+	ZK_PRIMARY_NAME    = "primary"
 	ZK_BACKUP_NAME     = "backup"
 )
 
@@ -158,12 +158,16 @@ func NewBackupWorkerNode(hostname string, port uint16, id WorkerId) BackupWorker
 // Worker metadata
 // A primary represents a set of primary nodes, including one primary node and several backup nodes.
 // A primary is identified by its primary id.
+
+type NodeEntry struct {
+	Name  string
+	Valid bool
+}
+
 type Worker struct {
 	Id     WorkerId
 	Weight float32
 	// here primary & backup nodes are represented by corresponding znode names.
-	Primary string
-	Backups []string
-	// this field is for internal use only
-	visited bool `json:"-"`
+	Primary NodeEntry
+	Backups []NodeEntry
 }

@@ -12,11 +12,6 @@ service KVBackup {
   rpc Backup(stream BackupEntry) returns (BackupReply) {}
 }
 
-message BackupEntry {
-  Operation op = 1;
-  string key = 2;
-  string value = 3;
-}
 
 message BackupReply {
   Status status = 1;

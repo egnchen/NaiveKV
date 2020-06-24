@@ -30,7 +30,7 @@ type KVStore interface {
 	Delete(key string) (ok bool)
 	Checkpoint() error
 	// Extract all values for keys that satisfies the divider function at the time this method is called.
-	// When doing migration, first block all incoming requests to the divider(not done here), then do extract.
+	// When doing migration, first call extract to get all values.
 	Extract(divider func(key string) bool) map[string]string
 	Merge(data map[string]string) error
 }
