@@ -45,15 +45,26 @@ type KVStore interface {
 	// persist kv store
 	Flush()
 	Checkpoint() error
-	PrepareExtract()
 	// Extract all values for keys that satisfies the divider function at the time this method is called.
 	// This method should not block. When doing calculation, the KVStore should continue to serve on other threads.
-	Extract(divider func(key string) bool) map[string]string
+	Extract(divider func(key string) bool, version uint64) map[string]ValueWithVersion
+}
+
+type ValueWithVersion struct {
+	Value   *string
+	Version uint64
+}
+
+func NewValueWithVersion(value string, version uint64) ValueWithVersion {
+	return ValueWithVersion{
+		Value:   &value,
+		Version: version,
+	}
 }
 
 type TransactionStruct struct {
 	Lock  sync.RWMutex
-	Layer map[string]*string
+	Layer map[string]ValueWithVersion
 }
 
 // and our implementation
@@ -61,13 +72,14 @@ type TransactionStruct struct {
 // and latest maps contains those indicated by WAL. The array of latest maps forms a log-like data structure,
 // and provide atomic undo/redo. Note that values could have been moved, so latest map could contain nil values.
 type SimpleKV struct {
-	// permutation is: base <- layers[0] <- layers[1] <-...<- lastLayer
-	// base and layers can only be read, lastLayer can be read & write
-	// so only lastLayer is locked with RWMutex
-	base           map[string]string
-	layers         []map[string]*string
+	// permutation is: base <- layers[0] <- layers[1] <-...<- different transaction layers
+	// base and layers can only be read and the last layer can be read & write
+	// so only transaction layer is locked with RWMutex.
+	// For non-zero transactions, content in zero transactions are also read when getting data,
+	// so this KV store provides read-committed transaction isolation level.
+	base           map[string]ValueWithVersion
 	transactions   []*TransactionStruct
-	tLock          sync.RWMutex // for usedTransactions array
+	tLock          sync.RWMutex // for transactions array
 	checkpointLock sync.Mutex
 	path           string
 	version        uint64
@@ -93,28 +105,31 @@ func (kv *SimpleKV) Get(key string, transactionId int) (string, error) {
 	t.Lock.RLock()
 	if v, ok := t.Layer[key]; ok {
 		t.Lock.RUnlock()
-		if v == nil {
+		if v.Value == nil {
 			return "", ENOENT
 		} else {
-			return *v, nil
+			return *v.Value, nil
 		}
 	}
 	t.Lock.RUnlock()
 
-	// go through layers
-	for i := range kv.layers {
-		ii := len(kv.layers) - i - 1
-		if v, ok := kv.layers[ii][key]; ok {
-			if v == nil {
+	if transactionId != 0 {
+		// go through transaction zero too
+		t0 := kv.getTransaction(0)
+		t0.Lock.RLock()
+		if v, ok := t.Layer[key]; ok {
+			t.Lock.RUnlock()
+			if v.Value == nil {
 				return "", ENOENT
 			} else {
-				return *v, nil
+				return *v.Value, nil
 			}
 		}
+		t.Lock.RUnlock()
 	}
-	value, ok := kv.base[key]
-	if ok {
-		return value, nil
+	v, ok := kv.base[key]
+	if ok && v.Value != nil {
+		return *v.Value, nil
 	} else {
 		return "", ENOENT
 	}
@@ -130,11 +145,11 @@ func (kv *SimpleKV) Put(key string, value string, transactionId int) (uint64, er
 	if transactionId == 0 {
 		kv.version += 1
 		kv.writeLog("put", key, value, "0", strconv.FormatUint(kv.version, 16))
-		t.Layer[key] = &value
+		t.Layer[key] = ValueWithVersion{Value: &value, Version: kv.version}
 		return kv.version, nil
 	} else {
 		kv.writeLog("put", key, value, strconv.FormatInt(int64(transactionId), 16))
-		t.Layer[key] = &value
+		t.Layer[key] = ValueWithVersion{Value: &value, Version: 0}
 		return 0, nil
 	}
 }
@@ -151,11 +166,11 @@ func (kv *SimpleKV) Delete(key string, transactionId int) (uint64, error) {
 	if transactionId == 0 {
 		kv.version += 1
 		kv.writeLog("del", key, "0", strconv.FormatUint(kv.version, 16))
-		t.Layer[key] = nil
+		t.Layer[key] = ValueWithVersion{Value: nil, Version: kv.version}
 		return kv.version, nil
 	} else {
 		kv.writeLog("del", key, strconv.FormatInt(int64(transactionId), 16))
-		t.Layer[key] = nil
+		t.Layer[key] = ValueWithVersion{Value: nil, Version: 0}
 		return 0, nil
 	}
 }
@@ -169,7 +184,7 @@ func (kv *SimpleKV) StartTransaction() (transactionId int, err error) {
 			kv.writeLog("start", strconv.FormatInt(int64(transactionId), 16))
 			kv.transactions[i] = &TransactionStruct{
 				Lock:  sync.RWMutex{},
-				Layer: make(map[string]*string),
+				Layer: make(map[string]ValueWithVersion),
 			}
 			return i, nil
 		}
@@ -206,10 +221,11 @@ func (kv *SimpleKV) Commit(transactionId int) error {
 	if t != nil {
 		// merge it into transaction zero
 		kv.transactions[0].Lock.Lock()
-		kv.writeLog("commit", strconv.FormatInt(int64(transactionId), 16))
+		kv.version += 1
+		kv.writeLog("commit", strconv.FormatInt(int64(transactionId), 16), strconv.FormatUint(kv.version, 16))
 		t.Lock.RLock()
 		for k, v := range t.Layer {
-			kv.transactions[0].Layer[k] = v
+			kv.transactions[0].Layer[k] = ValueWithVersion{Value: v.Value, Version: kv.version}
 		}
 		t.Lock.RUnlock()
 		kv.transactions[0].Lock.Unlock()
@@ -223,70 +239,37 @@ func (kv *SimpleKV) Commit(transactionId int) error {
 	}
 }
 
-// squish last layer into layers array
-// NOTICE you'll have to manually handle locking when calling this method
-func (kv *SimpleKV) saveLayer() {
-	kv.tLock.Lock()
-	defer kv.tLock.Unlock()
-	t := kv.transactions[0]
-	t.Lock.Lock()
-	defer t.Lock.Unlock()
-	if len(t.Layer) == 0 {
-		return
-	}
-	kv.layers = append(kv.layers, t.Layer)
-	t.Layer = make(map[string]*string)
-}
-
 // Clear log entries, flush current kv in memory to slots.
 // Call this when log file is getting too large.
 func (kv *SimpleKV) Checkpoint() error {
+	// cannot checkpoint when there is on-going transactions
+	kv.tLock.RLock()
+	for i, b := range kv.transactions {
+		if i != 0 && b != nil {
+			kv.tLock.RUnlock()
+			return errors.New("have transactions going on")
+		}
+	}
+	kv.tLock.RUnlock()
+
 	// only one checkpoint operation can happen at a time
 	kv.checkpointLock.Lock()
 	defer kv.checkpointLock.Unlock()
-	// make current last layer immutable
-	kv.saveLayer()
 	// calculate new base
-	b := make(map[string]string)
+	b := make(map[string]ValueWithVersion)
 	for k, v := range kv.base {
 		b[k] = v
 	}
-	for _, l := range kv.layers {
-		for k, v := range l {
-			if v == nil {
-				delete(b, k)
-			} else {
-				b[k] = *v
-			}
-		}
-	}
-	// and add the newest layer to it...
-	// essentially, we are collecting the new changes made during calculation of new base
-	// lock both read & write
+	// and add the newest layer to it
+	kv.tLock.RLock()
 	t := kv.transactions[0]
+	kv.tLock.RUnlock()
 	t.Lock.Lock()
+	defer t.Lock.Unlock()
 	for k, v := range t.Layer {
-		if v == nil {
-			delete(b, k)
-		} else {
-			b[k] = *v
-		}
+		b[k] = v
 	}
-	// redirect log to another temporary file
-	tmpLogFile, err := ioutil.TempFile(kv.path, LOG_TMP_FILENAME_PATTERN)
-	if err != nil {
-		t.Lock.Unlock()
-		return err
-	}
-	if err := kv.logFile.Close(); err != nil {
-		t.Lock.Unlock()
-		return err
-	}
-	kv.logFile = tmpLogFile
-	t.Lock.Unlock()
-	// COMMIT POINT
-
-	// flush into temporary slot file
+	// write new slot file
 	bin, err := json.Marshal(b)
 	if err != nil {
 		return err
@@ -298,17 +281,23 @@ func (kv *SimpleKV) Checkpoint() error {
 	if _, err := tmpSlotFile.Write(bin); err != nil {
 		return err
 	}
-	t.Lock.Lock()
-	defer t.Lock.Unlock()
-	// rename temporary log file to actual log file
-	if err := os.Rename(tmpLogFile.Name(), path.Join(kv.path, LOG_FILENAME)); err != nil {
-		return err
-	}
 	// rename temporary slot file to actual slot file
 	slotFileName := path.Join(kv.path, SLOT_FILENAME)
 	if err := os.Rename(tmpSlotFile.Name(), slotFileName); err != nil {
 		return err
 	}
+	// truncate log
+	tmpLogFile, err := ioutil.TempFile(kv.path, LOG_TMP_FILENAME_PATTERN)
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(tmpLogFile.Name(), kv.logFile.Name()); err != nil {
+		return err
+	}
+	// update base and transactions
+	kv.base = b
+	kv.transactions[0].Layer = make(map[string]ValueWithVersion)
+	kv.logFile = tmpLogFile
 	return nil
 }
 
@@ -349,8 +338,8 @@ func NewKVStore(pathString string) (*SimpleKV, error) {
 	var logFile, slotFile *os.File
 
 	var version uint64 = 0
-	base := make(map[string]string)
-	latest := make(map[string]*string)
+	base := make(map[string]ValueWithVersion)
+	latest := make(map[string]ValueWithVersion)
 
 	// open / create slot file
 	if _, err := os.Stat(slotFileName); os.IsNotExist(err) {
@@ -413,7 +402,6 @@ func NewKVStore(pathString string) (*SimpleKV, error) {
 	// others are nil
 	return &SimpleKV{
 		base:         base,
-		layers:       make([]map[string]*string, 0),
 		transactions: ts,
 		path:         pathString,
 		version:      version,
@@ -438,10 +426,10 @@ func readNum(quoted string, base int) uint64 {
 	return ret
 }
 
-func ReadLog(scanner *bufio.Scanner) (map[string]*string, uint64, error) {
+func ReadLog(scanner *bufio.Scanner) (map[string]ValueWithVersion, uint64, error) {
 	log := common.Log()
-	trans := make([]map[string]*string, TRANSACTION_COUNT)
-	trans[0] = make(map[string]*string)
+	trans := make([]map[string]ValueWithVersion, TRANSACTION_COUNT)
+	trans[0] = make(map[string]ValueWithVersion)
 	var tokens []string
 	var version uint64
 	defer func() {
@@ -472,7 +460,7 @@ func ReadLog(scanner *bufio.Scanner) (map[string]*string, uint64, error) {
 				}
 				version = readNum(tokens[4], 16)
 			}
-			trans[transNum][key] = &value
+			trans[transNum][key] = ValueWithVersion{Value: &value, Version: version}
 		case "del":
 			if len(tokens) < 3 {
 				panic(nil)
@@ -488,7 +476,7 @@ func ReadLog(scanner *bufio.Scanner) (map[string]*string, uint64, error) {
 				}
 				version = readNum(tokens[3], 16)
 			}
-			trans[transNum][key] = nil
+			trans[transNum][key] = ValueWithVersion{Value: nil, Version: version}
 		case "start":
 			// start transaction
 			if len(tokens) < 2 {
@@ -498,7 +486,7 @@ func ReadLog(scanner *bufio.Scanner) (map[string]*string, uint64, error) {
 			if trans[transNum] != nil {
 				panic(nil)
 			}
-			trans[transNum] = make(map[string]*string)
+			trans[transNum] = make(map[string]ValueWithVersion)
 		case "commit":
 			// commit transaction
 			if len(tokens) != 3 {
@@ -530,29 +518,23 @@ func ReadLog(scanner *bufio.Scanner) (map[string]*string, uint64, error) {
 	return trans[0], version, nil
 }
 
-func (kv *SimpleKV) PrepareExtract() {
-	// save layer
-	kv.saveLayer()
-}
-
-func (kv *SimpleKV) Extract(divider func(key string) bool) map[string]string {
-	kv.saveLayer()
+func (kv *SimpleKV) Extract(divider func(key string) bool, version uint64) map[string]ValueWithVersion {
 	// extract content out
-	b := make(map[string]string)
+	b := make(map[string]ValueWithVersion)
 	for k, v := range kv.base {
-		if divider(k) {
+		if divider(k) && v.Version >= version {
 			b[k] = v
 		}
 	}
-	for _, l := range kv.layers {
-		for k, v := range l {
-			if divider(k) {
-				if v == nil {
-					delete(b, k)
-				} else {
-					b[k] = *v
-				}
-			}
+	kv.tLock.RLock()
+	t := kv.transactions[0]
+	kv.tLock.RUnlock()
+
+	t.Lock.RLock()
+	defer t.Lock.RUnlock()
+	for k, v := range t.Layer {
+		if divider(k) && v.Version >= version {
+			b[k] = v
 		}
 	}
 	return b

@@ -181,7 +181,7 @@ func GetWorker(conn *zk.Conn, id WorkerId) (Worker, error) {
 		return Worker{}, err
 	}
 	var worker Worker
-	worker.Id = -1 // to detect inconsistency
+	worker.Id = id
 	worker.Watcher = eventChan
 	for _, c := range children {
 		bin := GetFromZk(conn, path.Join(p, c))
@@ -190,6 +190,8 @@ func GetWorker(conn *zk.Conn, id WorkerId) (Worker, error) {
 			if err := json.Unmarshal(bin, &config); err != nil {
 				return Worker{}, err
 			}
+			worker.Weight = config.Weight
+			worker.NumBackups = config.NumBackups
 		}
 		var node WorkerNode
 		if err := json.Unmarshal(bin, &node); err != nil {

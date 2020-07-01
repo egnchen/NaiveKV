@@ -10,6 +10,9 @@ option go_package = "proto";
 import "common.proto";
 
 service KVBackup {
+  // Transfer a lot of entries and return one reply. This is for full-size updates
+  // and all operations will be in a transaction, thus all-or-nothing.
+  rpc Transfer(stream BackupEntry) returns (BackupReply) {}
   // Transfer one entry(or multiple, small amount of entries) and return one ack,
   // this is for sync options, useful in lossless backup.
   rpc Sync(stream BackupEntry) returns (stream BackupReply) {}

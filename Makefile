@@ -10,10 +10,10 @@ master:
 	go run cmd/master/main.go
 
 primary:
-	go run cmd/primary/main.go -path tmp/data${id} -port $(shell expr ${id} + 7900)
+	go run cmd/primary/main.go -id ${id} -path tmp/data${id} -port $(shell expr ${id} + 7900)
 
 backup:
-	go run cmd/backup/main.go -path tmp/data_backup${id} -id ${id}
+	go run cmd/backup/main.go -id ${id} -path tmp/data_backup${id}
 
 client:
 	go run cmd/client/main.go

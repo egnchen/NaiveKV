@@ -46,8 +46,9 @@ func TestNewKVStore(t *testing.T) {
 func TestNewKVStore2(t *testing.T) {
 	setUp()
 	defer tearDown()
-	values := map[string]string{
-		"a": "b", "c": "d",
+	values := map[string]worker.ValueWithVersion{
+		"a": worker.NewValueWithVersion("b", 1),
+		"c": worker.NewValueWithVersion("d", 2),
 	}
 	logs := `put "c" "e" "0" "1"`
 	b, _ := json.Marshal(values)
@@ -170,7 +171,8 @@ func TestConcurrentCheckpoint(t *testing.T) {
 			}()
 		}
 		value := crc32.ChecksumIEEE([]byte{byte(i & 255), byte((i >> 8) & 255)})
-		kv.Put(strconv.Itoa(i), strconv.Itoa(int(value)), 0)
+		_, err := kv.Put(strconv.Itoa(i), strconv.Itoa(int(value)), 0)
+		assert.Nil(t, err)
 	}
 	kv.Close()
 	kv2, err := worker.NewKVStore(pathString)
@@ -267,7 +269,7 @@ func TestSimpleKV_Extract(t *testing.T) {
 				ret := kv.Extract(func(key string) bool {
 					i, _ := strconv.Atoi(key)
 					return i%2 == 1
-				})
+				}, 0)
 				cnt := 16384
 				for k, _ := range ret {
 					num, _ := strconv.Atoi(k)

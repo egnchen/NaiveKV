@@ -14,7 +14,11 @@ func (r RouletteAllocator) AllocateSlots(ring *common.HashSlotRing,
 	oldWorkers map[common.WorkerId]*common.Worker, newWorkers map[common.WorkerId]*common.Worker) (common.MigrationTable, error) {
 	slog := common.SugaredLog()
 	table := common.MigrationTable{}
-
+	// print new workers for inspection
+	slog.Info("New workers:")
+	for _, w := range newWorkers {
+		slog.Infof("worker %d weight %f", w.Id, w.Weight)
+	}
 	if len(oldWorkers) == 0 {
 		slog.Info("Initializing new hash ring...")
 		slotArr := make([]common.SlotId, len(*ring))
@@ -32,6 +36,7 @@ func (r RouletteAllocator) AllocateSlots(ring *common.HashSlotRing,
 		for s, w := range *ring {
 			oldWorkerSlots[w] = append(oldWorkerSlots[w], common.SlotId(s))
 		}
+
 		if _, ok := oldWorkerSlots[0]; ok {
 			panic("Error, still have unallocated slots before.")
 		}

@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"github.com/eyeKill/KV/common"
 	pb "github.com/eyeKill/KV/proto"
 	"go.uber.org/zap"
@@ -14,11 +15,69 @@ type SyncRoutine struct {
 	Mask      func(string) bool
 	EntryCh   chan *pb.BackupEntry
 	Version   uint64
-	Condition sync.Cond
+	Condition *sync.Cond
+	Syncing   bool
 	StopCh    chan struct{}
 }
 
-func (s *SyncRoutine) Loop() {
+func NewSyncRoutine(name string, client pb.KVBackupClient, mask func(string) bool) SyncRoutine {
+	return SyncRoutine{
+		name:      name,
+		conn:      client,
+		Mask:      mask,
+		EntryCh:   make(chan *pb.BackupEntry),
+		Version:   0,
+		Condition: sync.NewCond(&sync.Mutex{}),
+		Syncing:   false,
+		StopCh:    make(chan struct{}),
+	}
+}
+
+// do bulk transfer
+// the transferred data would be content plus newly added items from the entry channel
+func (s *SyncRoutine) Prepare(content map[string]ValueWithVersion) error {
+	log := common.Log()
+	log.Info("Doing bulk transfer.", zap.Int("length", len(content)), zap.String("destination", s.name))
+	ctx := context.Background()
+	client, err := s.conn.Transfer(ctx)
+	if err != nil {
+		return err
+	}
+	var version uint64 = 0
+	for k, v := range content {
+		if err := client.Send(&pb.BackupEntry{
+			Op:      pb.Operation_PUT,
+			Version: v.Version,
+			Key:     k,
+			Value:   *v.Value,
+		}); err != nil {
+			log.Warn("Connection interrupted.", zap.Error(err))
+			break
+		}
+		if version < v.Version {
+			version = v.Version
+		}
+	}
+	for len(s.EntryCh) > 0 {
+		ent := <-s.EntryCh
+		if err := client.Send(ent); err != nil {
+			log.Warn("Connection interrupted.", zap.Error(err))
+			break
+		}
+		version = ent.Version
+	}
+	repl, err := client.CloseAndRecv()
+	if err != nil {
+		return err
+	}
+	if repl.Version == version {
+		return nil
+	} else {
+		return errors.New("version does not match")
+	}
+}
+
+func (s *SyncRoutine) Sync() {
 	log := common.Log()
 	// start gRPC bi-directional stream
 	stream, err := s.conn.Sync(context.Background())

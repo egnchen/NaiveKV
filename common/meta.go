@@ -62,9 +62,10 @@ func NewWorkerNode(hostname string, port uint16, id WorkerId) WorkerNode {
 // A primary represents a set of primary nodes, including one primary node and several backup nodes.
 // A primary is identified by its primary id.
 type Worker struct {
-	Id      WorkerId
-	Weight  float32
-	Watcher <-chan zk.Event
+	Id         WorkerId
+	Weight     float32
+	NumBackups int
+	Watcher    <-chan zk.Event
 	// here primary & backup nodes are represented by corresponding znode names.
 	Primary     *WorkerNode
 	PrimaryName string
@@ -72,7 +73,6 @@ type Worker struct {
 }
 
 type WorkerConfig struct {
-	Version    uint32
 	Weight     float32
 	NumBackups int
 }

@@ -26,6 +26,8 @@ enum Operation {
   GET = 0;  // which shouldn't present itself in backup
   PUT = 1;
   DELETE = 2;
+  START_TRANSACTION = 3;
+  COMMIT_TRANSACTION = 4;
 }
 
 message BackupEntry {
