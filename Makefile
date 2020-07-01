@@ -1,6 +1,7 @@
+# some debug & running shorthands
 .PHONY: master primary backup client
 .PHONY: zookeeper zk-cli
-.PHONY: kill-master
+.PHONY: kill-port
 
 zookeeper:
 	docker run --name kv-zookeeper --restart always -d eyek/kv-zookeeper:1.0
@@ -23,6 +24,7 @@ zk-cli:
 kill-port:
 	sudo kill -9 $(shell lsof -t -i:${port})
 
+# some build targets
 PROTO_FILES := $(wildcard proto/*.proto)
 .PHONY: proto
 proto: $(PROTO_FILES)

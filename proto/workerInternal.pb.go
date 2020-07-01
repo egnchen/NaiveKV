@@ -113,7 +113,7 @@ func init() {
 }
 
 var fileDescriptor_8f142f2b1de3db81 = []byte{
-	// 231 bytes of a gzipped FileDescriptorProto
+	// 197 bytes of a gzipped FileDescriptorProto
 	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xe2, 0x12, 0x29, 0xcf, 0x2f, 0xca,
 	0x4e, 0x2d, 0xf2, 0xcc, 0x2b, 0x49, 0x2d, 0xca, 0x4b, 0xcc, 0xd1, 0x2b, 0x28, 0xca, 0x2f, 0xc9,
 	0x17, 0xe2, 0xc8, 0x2e, 0x83, 0xb0, 0xa4, 0x78, 0x92, 0xf3, 0x73, 0x73, 0xf3, 0xf3, 0xa0, 0x3c,
@@ -122,13 +122,11 @@ var fileDescriptor_8f142f2b1de3db81 = []byte{
 	0x9f, 0x17, 0x94, 0x5a, 0x5c, 0x90, 0x9f, 0x57, 0x9c, 0x2a, 0xa4, 0xc1, 0xc5, 0x56, 0x5c, 0x92,
 	0x58, 0x52, 0x5a, 0x2c, 0xc1, 0xa8, 0xc0, 0xa8, 0xc1, 0x67, 0x24, 0xa0, 0x07, 0x33, 0x5a, 0x2f,
 	0x18, 0x2c, 0x1e, 0x04, 0x95, 0x57, 0xb2, 0xe4, 0xe2, 0x75, 0xcb, 0x29, 0x2d, 0xce, 0x20, 0x5d,
-	0xab, 0xd1, 0x34, 0x46, 0x2e, 0x01, 0xef, 0xb0, 0x70, 0x14, 0x9f, 0x08, 0xd9, 0x73, 0x71, 0x25,
-	0x67, 0xa4, 0x26, 0x67, 0x17, 0xe4, 0x67, 0xe6, 0x95, 0x08, 0x89, 0xe9, 0x41, 0x9c, 0xae, 0x07,
-	0x73, 0xba, 0x9e, 0x2b, 0xc8, 0xe9, 0x52, 0xe2, 0x08, 0x43, 0x51, 0x6c, 0x57, 0x62, 0x10, 0x72,
-	0xe4, 0x62, 0xcf, 0x05, 0xfb, 0x27, 0x55, 0x48, 0x14, 0xa1, 0xca, 0x29, 0x31, 0x39, 0xbb, 0xb4,
-	0xc0, 0x35, 0xaf, 0xa4, 0xa8, 0x52, 0x4a, 0x1a, 0x21, 0x8c, 0xe1, 0x73, 0x25, 0x06, 0x0d, 0x46,
-	0x27, 0xf6, 0x28, 0x56, 0x88, 0x7d, 0x6c, 0x60, 0xca, 0x18, 0x10, 0x00, 0x00, 0xff, 0xff, 0x27,
-	0x9b, 0xa0, 0x07, 0x6f, 0x01, 0x00, 0x00,
+	0xab, 0x51, 0x30, 0x97, 0x80, 0x77, 0x58, 0x38, 0x8a, 0x47, 0x84, 0xec, 0xb9, 0xb8, 0x92, 0x33,
+	0x52, 0x93, 0xb3, 0x0b, 0xf2, 0x33, 0xf3, 0x4a, 0x84, 0xc4, 0xf4, 0x20, 0x2e, 0xd7, 0x83, 0xb9,
+	0x5c, 0xcf, 0x15, 0xe4, 0x72, 0x29, 0x71, 0x84, 0x99, 0x28, 0x96, 0x2b, 0x31, 0x38, 0xb1, 0x47,
+	0xb1, 0x42, 0x14, 0xb3, 0x81, 0x29, 0x63, 0x40, 0x00, 0x00, 0x00, 0xff, 0xff, 0xf8, 0x67, 0x1e,
+	0xa4, 0x2b, 0x01, 0x00, 0x00,
 }
 
 // Reference imports to suppress errors if they are not otherwise used.
@@ -144,7 +142,6 @@ const _ = grpc.SupportPackageIsVersion6
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://godoc.org/google.golang.org/grpc#ClientConn.NewStream.
 type KVWorkerInternalClient interface {
 	Checkpoint(ctx context.Context, in *empty.Empty, opts ...grpc.CallOption) (*FlushResponse, error)
-	Migrate(ctx context.Context, opts ...grpc.CallOption) (KVWorkerInternal_MigrateClient, error)
 }
 
 type kVWorkerInternalClient struct {
@@ -164,44 +161,9 @@ func (c *kVWorkerInternalClient) Checkpoint(ctx context.Context, in *empty.Empty
 	return out, nil
 }
 
-func (c *kVWorkerInternalClient) Migrate(ctx context.Context, opts ...grpc.CallOption) (KVWorkerInternal_MigrateClient, error) {
-	stream, err := c.cc.NewStream(ctx, &_KVWorkerInternal_serviceDesc.Streams[0], "/kv.proto.KVWorkerInternal/migrate", opts...)
-	if err != nil {
-		return nil, err
-	}
-	x := &kVWorkerInternalMigrateClient{stream}
-	return x, nil
-}
-
-type KVWorkerInternal_MigrateClient interface {
-	Send(*BackupEntry) error
-	CloseAndRecv() (*MigrationResponse, error)
-	grpc.ClientStream
-}
-
-type kVWorkerInternalMigrateClient struct {
-	grpc.ClientStream
-}
-
-func (x *kVWorkerInternalMigrateClient) Send(m *BackupEntry) error {
-	return x.ClientStream.SendMsg(m)
-}
-
-func (x *kVWorkerInternalMigrateClient) CloseAndRecv() (*MigrationResponse, error) {
-	if err := x.ClientStream.CloseSend(); err != nil {
-		return nil, err
-	}
-	m := new(MigrationResponse)
-	if err := x.ClientStream.RecvMsg(m); err != nil {
-		return nil, err
-	}
-	return m, nil
-}
-
 // KVWorkerInternalServer is the server API for KVWorkerInternal service.
 type KVWorkerInternalServer interface {
 	Checkpoint(context.Context, *empty.Empty) (*FlushResponse, error)
-	Migrate(KVWorkerInternal_MigrateServer) error
 }
 
 // UnimplementedKVWorkerInternalServer can be embedded to have forward compatible implementations.
@@ -210,9 +172,6 @@ type UnimplementedKVWorkerInternalServer struct {
 
 func (*UnimplementedKVWorkerInternalServer) Checkpoint(ctx context.Context, req *empty.Empty) (*FlushResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Checkpoint not implemented")
-}
-func (*UnimplementedKVWorkerInternalServer) Migrate(srv KVWorkerInternal_MigrateServer) error {
-	return status.Errorf(codes.Unimplemented, "method Migrate not implemented")
 }
 
 func RegisterKVWorkerInternalServer(s *grpc.Server, srv KVWorkerInternalServer) {
@@ -237,32 +196,6 @@ func _KVWorkerInternal_Checkpoint_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
-func _KVWorkerInternal_Migrate_Handler(srv interface{}, stream grpc.ServerStream) error {
-	return srv.(KVWorkerInternalServer).Migrate(&kVWorkerInternalMigrateServer{stream})
-}
-
-type KVWorkerInternal_MigrateServer interface {
-	SendAndClose(*MigrationResponse) error
-	Recv() (*BackupEntry, error)
-	grpc.ServerStream
-}
-
-type kVWorkerInternalMigrateServer struct {
-	grpc.ServerStream
-}
-
-func (x *kVWorkerInternalMigrateServer) SendAndClose(m *MigrationResponse) error {
-	return x.ServerStream.SendMsg(m)
-}
-
-func (x *kVWorkerInternalMigrateServer) Recv() (*BackupEntry, error) {
-	m := new(BackupEntry)
-	if err := x.ServerStream.RecvMsg(m); err != nil {
-		return nil, err
-	}
-	return m, nil
-}
-
 var _KVWorkerInternal_serviceDesc = grpc.ServiceDesc{
 	ServiceName: "kv.proto.KVWorkerInternal",
 	HandlerType: (*KVWorkerInternalServer)(nil),
@@ -272,12 +205,6 @@ var _KVWorkerInternal_serviceDesc = grpc.ServiceDesc{
 			Handler:    _KVWorkerInternal_Checkpoint_Handler,
 		},
 	},
-	Streams: []grpc.StreamDesc{
-		{
-			StreamName:    "migrate",
-			Handler:       _KVWorkerInternal_Migrate_Handler,
-			ClientStreams: true,
-		},
-	},
+	Streams:  []grpc.StreamDesc{},
 	Metadata: "workerInternal.proto",
 }

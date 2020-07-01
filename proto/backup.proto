@@ -1,5 +1,6 @@
 // gRPC service for KV data backup
-// This is between worker node and backup node
+// This is between worker node and backup node, or a worker node and a to-be worker node
+// (during worker data migration)
 
 syntax = "proto3";
 
@@ -9,11 +10,12 @@ option go_package = "proto";
 import "common.proto";
 
 service KVBackup {
-  rpc Backup(stream BackupEntry) returns (BackupReply) {}
+  // Transfer one entry(or multiple, small amount of entries) and return one ack,
+  // this is for sync options, useful in lossless backup.
+  rpc Sync(stream BackupEntry) returns (stream BackupReply) {}
 }
-
 
 message BackupReply {
   Status status = 1;
-  int32 version = 2;
+  uint64 version = 2;
 }

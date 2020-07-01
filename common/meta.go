@@ -1,21 +1,21 @@
 // decl: common Data structures & constants
 package common
 
-import (
-	"encoding/json"
-	"errors"
-	"fmt"
-)
+import "github.com/samuel/go-zookeeper/zk"
 
 const (
-	ZK_ROOT            = "/kv"
-	ZK_NODES_ROOT      = "/kv/nodes"
-	ZK_WORKERS_ROOT    = "/kv/workers"
-	ZK_MIGRATIONS_ROOT = "/kv/migrations"
-	ZK_WORKER_ID       = "/kv/next_worker_id"
-	ZK_MASTER_NAME     = "master"
-	ZK_PRIMARY_NAME    = "primary"
-	ZK_BACKUP_NAME     = "backup"
+	ZK_ROOT                = "/kv"
+	ZK_WORKERS_ROOT        = "/kv/workers"
+	ZK_MIGRATIONS_ROOT     = "/kv/migrations"
+	ZK_MASTER_NAME         = "master"
+	ZK_MASTER_ROOT         = "/kv/masters"
+	ZK_VERSION_NAME        = "version"
+	ZK_PRIMARY_WORKER_NAME = "primary"
+	ZK_BACKUP_WORKER_NAME  = "backup"
+	ZK_WORKER_ID_NAME      = "workerId"
+	ZK_TABLE_NAME          = "table"
+	ZK_WORKER_CONFIG_NAME  = "config"
+	ZK_COMPLETE_SEM_NAME   = "completeSem"
 )
 
 type Node struct {
@@ -24,103 +24,18 @@ type Node struct {
 }
 
 // KV store primary id. This id is mainly for slot allocations.
-// Zero is reserved as unallocated
-type WorkerId uint16
+type WorkerId int
 
 type SlotId uint16
 
-const (
-	TYPE_MASTER  = "Master"
-	TYPE_PRIMARY = "Primary"
-	TYPE_BACKUP  = "Backup"
-)
-
-// Metadata of a primary node
-type PrimaryWorkerNode struct {
-	Id     WorkerId
-	Host   Node
-	Weight float32
-	Status string
-}
-
-type BackupWorkerNode struct {
-	Id     WorkerId
-	Host   Node
-	Status string
-}
-
-// Metadata of a master node
 type MasterNode struct {
 	Host Node
 }
 
-// Marshal for these types
-func (n *MasterNode) MarshalJSON() ([]byte, error) {
-	type Alias MasterNode
-	return json.Marshal(struct {
-		Type string
-		Data *Alias
-	}{
-		Type: TYPE_MASTER,
-		Data: (*Alias)(n),
-	})
-}
-
-func (n *PrimaryWorkerNode) MarshalJSON() ([]byte, error) {
-	type Alias PrimaryWorkerNode
-	return json.Marshal(struct {
-		Type string
-		Data *Alias
-	}{
-		Type: TYPE_PRIMARY,
-		Data: (*Alias)(n),
-	})
-}
-
-func (n *BackupWorkerNode) MarshalJSON() ([]byte, error) {
-	type Alias BackupWorkerNode
-	return json.Marshal(struct {
-		Type string
-		Data *Alias
-	}{
-		Type: TYPE_BACKUP,
-		Data: (*Alias)(n),
-	})
-}
-
-// Unmarshal a typed node metadata to the node struct of corresponding type.
-// Returned value is one of *MasterNode, *PrimaryWorkerNode and *BackupWorkerNode.
-func UnmarshalNode(data []byte) (interface{}, error) {
-	type NodeMeta struct {
-		Type string
-		Data json.RawMessage
-	}
-	var meta NodeMeta
-	if err := json.Unmarshal(data, &meta); err != nil {
-		return nil, err
-	}
-	switch meta.Type {
-	case "Master":
-		var ret MasterNode
-		if err := json.Unmarshal(meta.Data, &ret); err != nil {
-			return nil, err
-		}
-		return &ret, nil
-	case "Primary":
-		var ret PrimaryWorkerNode
-		if err := json.Unmarshal(meta.Data, &ret); err != nil {
-			return nil, err
-		}
-		return &ret, nil
-	case "Backup":
-		var ret BackupWorkerNode
-		if err := json.Unmarshal(meta.Data, &ret); err != nil {
-			return nil, err
-		}
-		return &ret, nil
-	default:
-		return nil, errors.New(fmt.Sprintf("invalid type to unmarshall: %s", meta.Type))
-	}
+type WorkerNode struct {
+	Id     WorkerId
+	Host   Node
+	Status string
 }
 
 func NewMasterNode(hostname string, port uint16) MasterNode {
@@ -132,20 +47,8 @@ func NewMasterNode(hostname string, port uint16) MasterNode {
 	}
 }
 
-func NewPrimaryWorkerNode(hostname string, port uint16, id WorkerId, weight float32) PrimaryWorkerNode {
-	return PrimaryWorkerNode{
-		Id: id,
-		Host: Node{
-			Hostname: hostname,
-			Port:     port,
-		},
-		Weight: weight,
-		Status: "",
-	}
-}
-
-func NewBackupWorkerNode(hostname string, port uint16, id WorkerId) BackupWorkerNode {
-	return BackupWorkerNode{
+func NewWorkerNode(hostname string, port uint16, id WorkerId) WorkerNode {
+	return WorkerNode{
 		Id: id,
 		Host: Node{
 			Hostname: hostname,
@@ -158,16 +61,18 @@ func NewBackupWorkerNode(hostname string, port uint16, id WorkerId) BackupWorker
 // Worker metadata
 // A primary represents a set of primary nodes, including one primary node and several backup nodes.
 // A primary is identified by its primary id.
-
-type NodeEntry struct {
-	Name  string
-	Valid bool
+type Worker struct {
+	Id      WorkerId
+	Weight  float32
+	Watcher <-chan zk.Event
+	// here primary & backup nodes are represented by corresponding znode names.
+	Primary     *WorkerNode
+	PrimaryName string
+	Backups     map[string]*WorkerNode
 }
 
-type Worker struct {
-	Id     WorkerId
-	Weight float32
-	// here primary & backup nodes are represented by corresponding znode names.
-	Primary NodeEntry
-	Backups []NodeEntry
+type WorkerConfig struct {
+	Version    uint32
+	Weight     float32
+	NumBackups int
 }

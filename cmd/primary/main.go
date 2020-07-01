@@ -73,7 +73,7 @@ func main() {
 	// initialize workerServer server
 	workerServer, err := worker.NewPrimaryServer(*hostname, uint16(*port), *filePath)
 	if err != nil {
-		log.Panic("Failed to initialize workerServer object.", zap.Error(err))
+		log.Panic("Failed to initialize workerServer objecz`t.", zap.Error(err))
 	}
 
 	if err := workerServer.RegisterToZk(conn); err != nil {

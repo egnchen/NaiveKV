@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 	"io"
 	"path"
+	"strconv"
 )
 
 type BackupServer struct {
@@ -40,9 +41,10 @@ func NewBackupWorker(hostname string, port uint16, filePath string, id common.Wo
 }
 
 // backup routine
-func (s *BackupServer) Backup(srv pb.KVBackup_BackupServer) error {
+
+func (s *BackupServer) Sync(srv pb.KVBackup_SyncServer) error {
 	log := common.Log()
-	log.Info("Successfully connected with primary.")
+	log.Info("Syncing with primary...")
 	for {
 		ent, err := srv.Recv()
 		if err == io.EOF {
@@ -57,9 +59,9 @@ func (s *BackupServer) Backup(srv pb.KVBackup_BackupServer) error {
 		}
 		switch ent.Op {
 		case pb.Operation_PUT:
-			s.kv.Put(ent.Key, ent.Value)
+			s.kv.Put(ent.Key, ent.Value, 0)
 		case pb.Operation_DELETE:
-			s.kv.Delete(ent.Key)
+			s.kv.Delete(ent.Key, 0)
 		default:
 			log.Sugar().Warnf("Unsupported operation %s", pb.Operation_name[int32(ent.Op)])
 		}
@@ -69,9 +71,9 @@ func (s *BackupServer) Backup(srv pb.KVBackup_BackupServer) error {
 func (s *BackupServer) RegisterToZk(conn *zk.Conn) error {
 	log := common.Log()
 
-	// workers don't have to ensure that path exists.
-	nodePath := path.Join(common.ZK_NODES_ROOT, common.ZK_BACKUP_NAME)
-	exists, _, err := conn.Exists(common.ZK_NODES_ROOT)
+	// backup does not have to ensure that path exists.
+	workerPath := path.Join(common.ZK_WORKERS_ROOT, strconv.Itoa(int(s.WorkerId)))
+	exists, _, err := conn.Exists(workerPath)
 	if err != nil {
 		return err
 	} else if !exists {
@@ -80,11 +82,12 @@ func (s *BackupServer) RegisterToZk(conn *zk.Conn) error {
 	s.conn = conn
 
 	log.Info("Initialized configuration", zap.Uint16("id", uint16(s.WorkerId)))
-	data := common.NewBackupWorkerNode(s.Hostname, s.Port, s.WorkerId)
+	data := common.NewWorkerNode(s.Hostname, s.Port, s.WorkerId)
 	b, err := json.Marshal(&data)
 	if err != nil {
 		return err
 	}
+	nodePath := path.Join(workerPath, common.ZK_BACKUP_WORKER_NAME)
 	name, err := conn.CreateProtectedEphemeralSequential(nodePath, b, zk.WorldACL(zk.PermAll))
 	if err != nil {
 		return err

@@ -30,8 +30,9 @@ enum Operation {
 
 message BackupEntry {
   Operation op = 1;
-  string key = 2;
-  string value = 3;
+  uint64 version = 2;
+  string key = 3;
+  string value = 4;
 }
 
 enum Status {

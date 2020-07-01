@@ -7,24 +7,18 @@ import (
 
 const DEFAULT_SLOT_COUNT = 1024
 
-type HashSlotRing struct {
-	Version uint
-	Slots   []WorkerId
-}
+type HashSlotRing []WorkerId
 
-func NewHashSlotRing(size uint16) HashSlotRing {
-	return HashSlotRing{
-		Version: 0,
-		Slots:   make([]WorkerId, size),
-	}
-}
-
-func (ring HashSlotRing) Len() int {
-	return len(ring.Slots)
+func NewHashSlotRing() HashSlotRing {
+	return make([]WorkerId, DEFAULT_SLOT_COUNT)
 }
 
 func (ring HashSlotRing) GetWorkerId(key string) WorkerId {
-	return ring.Slots[ring.GetSlotId(key)]
+	return ring[ring.GetSlotId(key)]
+}
+
+func (ring HashSlotRing) GetWorkerIdDirect(id SlotId) WorkerId {
+	return ring[id]
 }
 
 func GetSlotId(key string, slotCount int) SlotId {
@@ -33,12 +27,12 @@ func GetSlotId(key string, slotCount int) SlotId {
 }
 
 func (ring HashSlotRing) GetSlotId(key string) SlotId {
-	return GetSlotId(key, ring.Len())
+	return GetSlotId(key, len(ring))
 }
 
 type MigrationTable map[SlotId]WorkerId
 type SlotMigration struct {
-	Version uint
+	Version uint32
 	Table   MigrationTable
 }
 
@@ -49,6 +43,53 @@ type HashSlotAllocator interface {
 		oldWorkers map[WorkerId]*Worker, newWorkers map[WorkerId]*Worker) (MigrationTable, error)
 }
 
+type SingleNodeMigration struct {
+	Version uint32
+	Id      WorkerId
+	Table   MigrationTable
+	Len     int
+}
+
+func (r SingleNodeMigration) GetDestId(key string) WorkerId {
+	slot := GetSlotId(key, r.Len)
+	ret, ok := r.Table[slot]
+	if ok {
+		return ret
+	} else {
+		return r.Id
+	}
+}
+
+func NewSingleNodeMigration(id WorkerId, original *HashSlotRing, migration *SlotMigration) *SingleNodeMigration {
+	table := make(MigrationTable)
+	for slot, srcId := range *original {
+		if srcId == id {
+			table[SlotId(slot)] = migration.Table[SlotId(slot)]
+		}
+	}
+	return &SingleNodeMigration{
+		Version: migration.Version,
+		Id:      id,
+		Table:   table,
+		Len:     len(*original),
+	}
+}
+
+// separate an overall migration plan to small plans specific to different nodes
+func (m *SlotMigration) Separate(original *HashSlotRing) map[WorkerId]*SingleNodeMigration {
+	// stat how many workers
+	ret := make(map[WorkerId]*SingleNodeMigration)
+	for i := range m.Table {
+		if _, ok := ret[WorkerId(i)]; !ok {
+			ret[WorkerId(i)] = nil
+		}
+	}
+	for i := range ret {
+		ret[i] = NewSingleNodeMigration(i, original, m)
+	}
+	return ret
+}
+
 type RingBoolVector struct {
 	Vector []uint8
 }
@@ -57,34 +98,18 @@ func (r RingBoolVector) GetSlotId(key string) SlotId {
 	return GetSlotId(key, len(r.Vector))
 }
 
-type SingleNodeMigration struct {
-	Version uint
-	Id      WorkerId
-	Ring    RingBoolVector
-}
-
-func NewSingleNodeMigration(id WorkerId, migration *SlotMigration) SingleNodeMigration {
-	vector := make([]uint8, DEFAULT_SLOT_COUNT/8)
-	for i, w := range migration.Table {
-		if w == id {
-			vector[i/8] |= 1 << (i % 8)
-		}
-	}
-	return SingleNodeMigration{
-		Version: migration.Version,
-		Id:      id,
-		Ring:    RingBoolVector{Vector: vector},
-	}
-}
-
-func (v RingBoolVector) Set(id SlotId, value bool) {
+func (r RingBoolVector) Set(id SlotId, value bool) {
 	if value {
-		v.Vector[id/8] |= 1 << (id % 8)
+		r.Vector[id/8] |= 1 << (id % 8)
 	} else {
-		v.Vector[id/8] ^= ^(1 << (id % 8))
+		r.Vector[id/8] ^= ^(1 << (id % 8))
 	}
 }
 
-func (v RingBoolVector) Get(id SlotId) bool {
-	return v.Vector[id/8]&(1<<(id%8)) > 0
+func (r RingBoolVector) Get(id SlotId) bool {
+	return r.Vector[id/8]&(1<<(id%8)) > 0
+}
+
+func (r RingBoolVector) GetByKey(key string) bool {
+	return r.Get(r.GetSlotId(key))
 }

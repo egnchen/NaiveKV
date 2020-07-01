@@ -26,7 +26,7 @@ const _ = proto.ProtoPackageIsVersion3 // please upgrade the proto package
 
 type BackupReply struct {
 	Status               Status   `protobuf:"varint,1,opt,name=status,proto3,enum=kv.proto.Status" json:"status,omitempty"`
-	Version              int32    `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
+	Version              uint64   `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
 	XXX_NoUnkeyedLiteral struct{} `json:"-"`
 	XXX_unrecognized     []byte   `json:"-"`
 	XXX_sizecache        int32    `json:"-"`
@@ -64,7 +64,7 @@ func (m *BackupReply) GetStatus() Status {
 	return Status_OK
 }
 
-func (m *BackupReply) GetVersion() int32 {
+func (m *BackupReply) GetVersion() uint64 {
 	if m != nil {
 		return m.Version
 	}
@@ -80,17 +80,18 @@ func init() {
 }
 
 var fileDescriptor_65240d19de191688 = []byte{
-	// 157 bytes of a gzipped FileDescriptorProto
+	// 162 bytes of a gzipped FileDescriptorProto
 	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xe2, 0xe2, 0x49, 0x4a, 0x4c, 0xce,
 	0x2e, 0x2d, 0xd0, 0x2b, 0x28, 0xca, 0x2f, 0xc9, 0x17, 0xe2, 0xc8, 0x2e, 0x83, 0xb0, 0xa4, 0x78,
 	0x92, 0xf3, 0x73, 0x73, 0xf3, 0xf3, 0x20, 0x3c, 0xa5, 0x40, 0x2e, 0x6e, 0x27, 0xb0, 0xba, 0xa0,
 	0xd4, 0x82, 0x9c, 0x4a, 0x21, 0x0d, 0x2e, 0xb6, 0xe2, 0x92, 0xc4, 0x92, 0xd2, 0x62, 0x09, 0x46,
 	0x05, 0x46, 0x0d, 0x3e, 0x23, 0x01, 0x3d, 0x98, 0x3e, 0xbd, 0x60, 0xb0, 0x78, 0x10, 0x54, 0x5e,
 	0x48, 0x82, 0x8b, 0xbd, 0x2c, 0xb5, 0xa8, 0x38, 0x33, 0x3f, 0x4f, 0x82, 0x49, 0x81, 0x51, 0x83,
-	0x35, 0x08, 0xc6, 0x35, 0x72, 0xe3, 0xe2, 0xf0, 0x0e, 0x83, 0x18, 0x2a, 0x64, 0xc5, 0xc5, 0x06,
-	0x65, 0x89, 0x22, 0x4c, 0x82, 0x88, 0xb8, 0xe6, 0x95, 0x14, 0x55, 0x4a, 0x61, 0x08, 0x83, 0xdd,
-	0xa1, 0xc4, 0xa0, 0xc1, 0xe8, 0xc4, 0x1e, 0xc5, 0x0a, 0x96, 0x48, 0x62, 0x03, 0x53, 0xc6, 0x80,
-	0x00, 0x00, 0x00, 0xff, 0xff, 0x32, 0xdc, 0x7f, 0x88, 0xd2, 0x00, 0x00, 0x00,
+	0x25, 0x08, 0xc6, 0x35, 0x72, 0xe3, 0xe2, 0xf0, 0x0e, 0x83, 0x18, 0x2a, 0x64, 0xc5, 0xc5, 0x12,
+	0x5c, 0x99, 0x97, 0x2c, 0x24, 0x8a, 0x30, 0x07, 0x22, 0xe3, 0x9a, 0x57, 0x52, 0x54, 0x29, 0x85,
+	0x21, 0x0c, 0x76, 0x85, 0x12, 0x83, 0x06, 0xa3, 0x01, 0xa3, 0x13, 0x7b, 0x14, 0x2b, 0x58, 0x2a,
+	0x89, 0x0d, 0x4c, 0x19, 0x03, 0x02, 0x00, 0x00, 0xff, 0xff, 0x56, 0x3f, 0x93, 0x52, 0xd2, 0x00,
+	0x00, 0x00,
 }
 
 // Reference imports to suppress errors if they are not otherwise used.
@@ -105,7 +106,9 @@ const _ = grpc.SupportPackageIsVersion6
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://godoc.org/google.golang.org/grpc#ClientConn.NewStream.
 type KVBackupClient interface {
-	Backup(ctx context.Context, opts ...grpc.CallOption) (KVBackup_BackupClient, error)
+	// Transfer one entry(or multiple, small amount of entries) and return one ack,
+	// this is for sync options, useful in lossless backup.
+	Sync(ctx context.Context, opts ...grpc.CallOption) (KVBackup_SyncClient, error)
 }
 
 type kVBackupClient struct {
@@ -116,33 +119,30 @@ func NewKVBackupClient(cc grpc.ClientConnInterface) KVBackupClient {
 	return &kVBackupClient{cc}
 }
 
-func (c *kVBackupClient) Backup(ctx context.Context, opts ...grpc.CallOption) (KVBackup_BackupClient, error) {
-	stream, err := c.cc.NewStream(ctx, &_KVBackup_serviceDesc.Streams[0], "/kv.proto.KVBackup/Backup", opts...)
+func (c *kVBackupClient) Sync(ctx context.Context, opts ...grpc.CallOption) (KVBackup_SyncClient, error) {
+	stream, err := c.cc.NewStream(ctx, &_KVBackup_serviceDesc.Streams[0], "/kv.proto.KVBackup/Sync", opts...)
 	if err != nil {
 		return nil, err
 	}
-	x := &kVBackupBackupClient{stream}
+	x := &kVBackupSyncClient{stream}
 	return x, nil
 }
 
-type KVBackup_BackupClient interface {
+type KVBackup_SyncClient interface {
 	Send(*BackupEntry) error
-	CloseAndRecv() (*BackupReply, error)
+	Recv() (*BackupReply, error)
 	grpc.ClientStream
 }
 
-type kVBackupBackupClient struct {
+type kVBackupSyncClient struct {
 	grpc.ClientStream
 }
 
-func (x *kVBackupBackupClient) Send(m *BackupEntry) error {
+func (x *kVBackupSyncClient) Send(m *BackupEntry) error {
 	return x.ClientStream.SendMsg(m)
 }
 
-func (x *kVBackupBackupClient) CloseAndRecv() (*BackupReply, error) {
-	if err := x.ClientStream.CloseSend(); err != nil {
-		return nil, err
-	}
+func (x *kVBackupSyncClient) Recv() (*BackupReply, error) {
 	m := new(BackupReply)
 	if err := x.ClientStream.RecvMsg(m); err != nil {
 		return nil, err
@@ -152,40 +152,42 @@ func (x *kVBackupBackupClient) CloseAndRecv() (*BackupReply, error) {
 
 // KVBackupServer is the server API for KVBackup service.
 type KVBackupServer interface {
-	Backup(KVBackup_BackupServer) error
+	// Transfer one entry(or multiple, small amount of entries) and return one ack,
+	// this is for sync options, useful in lossless backup.
+	Sync(KVBackup_SyncServer) error
 }
 
 // UnimplementedKVBackupServer can be embedded to have forward compatible implementations.
 type UnimplementedKVBackupServer struct {
 }
 
-func (*UnimplementedKVBackupServer) Backup(srv KVBackup_BackupServer) error {
-	return status.Errorf(codes.Unimplemented, "method Backup not implemented")
+func (*UnimplementedKVBackupServer) Sync(srv KVBackup_SyncServer) error {
+	return status.Errorf(codes.Unimplemented, "method Sync not implemented")
 }
 
 func RegisterKVBackupServer(s *grpc.Server, srv KVBackupServer) {
 	s.RegisterService(&_KVBackup_serviceDesc, srv)
 }
 
-func _KVBackup_Backup_Handler(srv interface{}, stream grpc.ServerStream) error {
-	return srv.(KVBackupServer).Backup(&kVBackupBackupServer{stream})
+func _KVBackup_Sync_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(KVBackupServer).Sync(&kVBackupSyncServer{stream})
 }
 
-type KVBackup_BackupServer interface {
-	SendAndClose(*BackupReply) error
+type KVBackup_SyncServer interface {
+	Send(*BackupReply) error
 	Recv() (*BackupEntry, error)
 	grpc.ServerStream
 }
 
-type kVBackupBackupServer struct {
+type kVBackupSyncServer struct {
 	grpc.ServerStream
 }
 
-func (x *kVBackupBackupServer) SendAndClose(m *BackupReply) error {
+func (x *kVBackupSyncServer) Send(m *BackupReply) error {
 	return x.ServerStream.SendMsg(m)
 }
 
-func (x *kVBackupBackupServer) Recv() (*BackupEntry, error) {
+func (x *kVBackupSyncServer) Recv() (*BackupEntry, error) {
 	m := new(BackupEntry)
 	if err := x.ServerStream.RecvMsg(m); err != nil {
 		return nil, err
@@ -199,8 +201,9 @@ var _KVBackup_serviceDesc = grpc.ServiceDesc{
 	Methods:     []grpc.MethodDesc{},
 	Streams: []grpc.StreamDesc{
 		{
-			StreamName:    "Backup",
-			Handler:       _KVBackup_Backup_Handler,
+			StreamName:    "Sync",
+			Handler:       _KVBackup_Sync_Handler,
+			ServerStreams: true,
 			ClientStreams: true,
 		},
 	},

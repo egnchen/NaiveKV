@@ -17,8 +17,8 @@ func (r RouletteAllocator) AllocateSlots(ring *common.HashSlotRing,
 
 	if len(oldWorkers) == 0 {
 		slog.Info("Initializing new hash ring...")
-		slotArr := make([]common.SlotId, ring.Len())
-		for i := 0; i < int(ring.Len()); i++ {
+		slotArr := make([]common.SlotId, len(*ring))
+		for i := 0; i < len(*ring); i++ {
 			slotArr[i] = common.SlotId(i)
 		}
 		// shuffle it
@@ -29,7 +29,7 @@ func (r RouletteAllocator) AllocateSlots(ring *common.HashSlotRing,
 		// already allocated before, we need to add new node to the hash ring
 		// to make things easier we change the data structure here...
 		oldWorkerSlots := make(map[common.WorkerId][]common.SlotId)
-		for s, w := range ring.Slots {
+		for s, w := range *ring {
 			oldWorkerSlots[w] = append(oldWorkerSlots[w], common.SlotId(s))
 		}
 		if _, ok := oldWorkerSlots[0]; ok {
@@ -43,7 +43,7 @@ func (r RouletteAllocator) AllocateSlots(ring *common.HashSlotRing,
 		for _, n := range newWorkers {
 			newWeight += n.Weight
 		}
-		toAllocate := uint32(float32(ring.Len())*newWeight/(newWeight+oldWeight) + 0.5)
+		toAllocate := uint32(float32(len(*ring))*newWeight/(newWeight+oldWeight) + 0.5)
 		slog.Infof("To allocate: %d", toAllocate)
 
 		var w float32 = 0
