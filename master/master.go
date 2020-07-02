@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 	"path"
 	"reflect"
+	"sort"
 	"strconv"
 	"sync"
 )
@@ -61,7 +62,7 @@ func (m *Server) doMigration(newWorkers map[common.WorkerId]*common.Worker) {
 	if err := completeSem.Watch(func(newValue int) bool { return newValue > 0 }); err != nil {
 		log.Error("Failed to watch semaphore.", zap.Error(err))
 	}
-	log.Infof("Successfully migrated %d slots, committing migration...", len(migration.Table))
+	log.Infof("Successfully migrated %d slots, committing...", len(migration.Table))
 
 	// completed, commit hash slot ring to zookeeper
 	newSlot := common.NewHashSlotRing()
@@ -201,6 +202,33 @@ func (m *Server) GetWorkerByKey(_ context.Context, key *pb.Key) (*pb.GetWorkerRe
 // TODO Handle master single-point failure recovery, like /kv/worker directory
 func (m *Server) RegisterToZk(conn *zk.Conn) error {
 	log := common.Log()
+	m.conn = conn
+
+	// register itself
+	nodePath := path.Join(common.ZK_MASTER_ROOT, common.ZK_MASTER_NAME)
+	data := common.NewMasterNode(m.Hostname, m.Port)
+	b, err := json.Marshal(data)
+	if err != nil {
+		log.Panic("Failed to marshall into json object.", zap.Error(err))
+	}
+	n, err := conn.Create(nodePath, b, zk.FlagSequence|zk.FlagEphemeral, zk.WorldACL(zk.PermAll))
+	if err != nil {
+		log.Panic("Failed to register itself to zookeeper.", zap.Error(err))
+	}
+	name := path.Base(n)
+	// now make sure that we are the lock holder
+	for {
+		children, _, eventChan, err := m.conn.ChildrenW(common.ZK_MASTER_ROOT)
+		if err != nil {
+			log.Panic("Failed to get all lock holders.")
+		}
+		sort.Strings(children)
+		if children[0] == name {
+			// lock holder is me!
+			break
+		}
+		_ = <-eventChan
+	}
 	// ensure all paths exist
 	if err := common.EnsurePathRecursive(conn, common.ZK_WORKERS_ROOT); err != nil {
 		return err
@@ -209,6 +237,9 @@ func (m *Server) RegisterToZk(conn *zk.Conn) error {
 		return err
 	}
 	if err := common.EnsurePath(conn, common.ZK_MASTER_ROOT); err != nil {
+		return err
+	}
+	if err := common.EnsurePath(conn, common.ZK_ELECTION_ROOT); err != nil {
 		return err
 	}
 	// initialize version id & worker id
@@ -249,19 +280,22 @@ func (m *Server) RegisterToZk(conn *zk.Conn) error {
 		if err != nil {
 			return err
 		}
+	} else {
+		// retrieve the latest ring from zookeeper
+		bin, _, err := conn.Get(path.Join(common.ZK_ROOT, common.ZK_TABLE_NAME))
+		if err != nil {
+			log.Error("Failed to get slot ring from zookeeper", zap.Error(err))
+			return err
+		}
+		var slot common.HashSlotRing
+		if err := json.Unmarshal(bin, &slot); err != nil {
+			log.Error("Failed to parse slot ring in zookeeper", zap.Error(err))
+			return err
+		}
+		m.slots = slot
+		log.Info("Fetched latest distribution from zookeeper.")
 	}
 
-	// register itself
-	nodePath := path.Join(common.ZK_MASTER_ROOT, common.ZK_MASTER_NAME)
-	data := common.NewMasterNode(m.Hostname, m.Port)
-	b, err := json.Marshal(data)
-	if err != nil {
-		log.Panic("Failed to marshall into json object.", zap.Error(err))
-	}
-	if _, err = conn.CreateProtectedEphemeralSequential(nodePath, b, zk.WorldACL(zk.PermAll)); err != nil {
-		log.Panic("Failed to register itself to zookeeper.", zap.Error(err))
-	}
-	m.conn = conn
 	return nil
 }
 
@@ -322,13 +356,14 @@ func (m *Server) Watch(stopChan <-chan struct{}) {
 			Chan: reflect.ValueOf(stopChan),
 		})
 		m.rwLock.RUnlock()
-
+		log.Sugar().Infof("Watching %+v\n", selectCases)
 		chosen, recv, recvOK := reflect.Select(selectCases)
 		if chosen == 0 {
 			if !recvOK {
 				log.Info("Worker node watcher closed.")
 			}
 			// change in worker root, new worker worker
+			log.Info("Change in worker root detected.")
 			children, _, w, err := m.conn.ChildrenW(common.ZK_WORKERS_ROOT)
 			if err != nil {
 				log.Error("Failed to watch worker root again.", zap.Error(err))
@@ -352,7 +387,7 @@ func (m *Server) Watch(stopChan <-chan struct{}) {
 				m.rootWatch = w
 				m.rwLock.Unlock()
 			}
-			go m.doMigration(newWorkers)
+			m.doMigration(newWorkers)
 			// workers will never disappear
 		} else if chosen == len(selectCases)-1 {
 			// stop chan
@@ -363,6 +398,7 @@ func (m *Server) Watch(stopChan <-chan struct{}) {
 			}
 			// one of the workers changed
 			event := recv.Interface().(zk.Event)
+			log.Info("Worker node change detected.", zap.String("path", event.Path))
 			if event.Type == zk.EventNodeChildrenChanged {
 				// update single node
 				_, name := path.Split(event.Path)

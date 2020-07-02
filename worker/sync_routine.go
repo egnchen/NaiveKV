@@ -67,7 +67,6 @@ func (s *SyncRoutine) Prepare(content map[string]ValueWithVersion) error {
 		version = ent.Version
 	}
 	repl, err := client.CloseAndRecv()
-	println(err)
 	if err != nil {
 		log.Fatal("Close & recv got error.", zap.Error(err))
 		return err

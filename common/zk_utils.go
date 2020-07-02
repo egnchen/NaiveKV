@@ -183,6 +183,7 @@ func GetWorker(conn *zk.Conn, id WorkerId) (Worker, error) {
 	var worker Worker
 	worker.Id = id
 	worker.Watcher = eventChan
+	worker.Backups = make(map[string]*WorkerNode)
 	for _, c := range children {
 		bin := GetFromZk(conn, path.Join(p, c))
 		if c == "config" {

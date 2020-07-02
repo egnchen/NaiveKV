@@ -48,6 +48,16 @@ type WorkerServer struct {
 	version          uint64
 	versionCond      *sync.Cond
 	modeChangeCond   *sync.Cond
+
+	// three goroutines: watch workers, watch migration, do sync.
+	// watch workers & watch migration should be updated once mode changes
+	WatchWorkerStopChan    chan struct{}
+	WatchMigrationStopChan chan struct{}
+	SyncStopChan           chan struct{}
+
+	// original mode, speicified when being first run.
+	// this help determine whether it should step down as the temporary primary
+	origMode string
 }
 
 // the following two are for migration.
@@ -77,6 +87,9 @@ func (s *WorkerServer) Transfer(server pb.KVBackup_TransferServer) error {
 				})
 			} else {
 				log.Info("Successfully committed")
+				s.versionCond.L.Lock()
+				s.version = version
+				s.versionCond.L.Unlock()
 				return server.SendAndClose(&pb.BackupReply{
 					Status:  pb.Status_OK,
 					Version: version,
@@ -176,19 +189,23 @@ func NewPrimaryServer(hostname string, port uint16, filePath string, id common.W
 		return nil, err
 	}
 	return &WorkerServer{
-		Hostname:       hostname,
-		Port:           port,
-		FilePath:       filePath,
-		Id:             id,
-		kv:             kv,
-		mode:           MODE_PRIMARY,
-		lock:           sync.RWMutex{},
-		backups:        make(map[string]*SyncRoutine),
-		backupCh:       make(chan *pb.BackupEntry),
-		migrations:     make(map[string]*SyncRoutine),
-		versionCond:    sync.NewCond(&sync.Mutex{}),
-		modeChangeCond: sync.NewCond(&sync.Mutex{}),
-		backupCond:     sync.NewCond(&sync.Mutex{}),
+		Hostname:               hostname,
+		Port:                   port,
+		FilePath:               filePath,
+		Id:                     id,
+		kv:                     kv,
+		mode:                   MODE_PRIMARY,
+		origMode:               MODE_PRIMARY,
+		lock:                   sync.RWMutex{},
+		backups:                make(map[string]*SyncRoutine),
+		backupCh:               make(chan *pb.BackupEntry),
+		migrations:             make(map[string]*SyncRoutine),
+		versionCond:            sync.NewCond(&sync.Mutex{}),
+		modeChangeCond:         sync.NewCond(&sync.Mutex{}),
+		backupCond:             sync.NewCond(&sync.Mutex{}),
+		WatchMigrationStopChan: make(chan struct{}),
+		WatchWorkerStopChan:    make(chan struct{}),
+		SyncStopChan:           make(chan struct{}),
 	}, nil
 }
 
@@ -198,19 +215,23 @@ func NewBackupServer(hostname string, port uint16, filePath string, id common.Wo
 		return nil, err
 	}
 	return &WorkerServer{
-		Hostname:       hostname,
-		Port:           port,
-		FilePath:       filePath,
-		Id:             id,
-		kv:             kv,
-		mode:           MODE_BACKUP,
-		lock:           sync.RWMutex{},
-		backups:        make(map[string]*SyncRoutine),
-		backupCh:       make(chan *pb.BackupEntry),
-		migrations:     make(map[string]*SyncRoutine),
-		versionCond:    sync.NewCond(&sync.Mutex{}),
-		modeChangeCond: sync.NewCond(&sync.Mutex{}),
-		backupCond:     sync.NewCond(&sync.Mutex{}),
+		Hostname:               hostname,
+		Port:                   port,
+		FilePath:               filePath,
+		Id:                     id,
+		kv:                     kv,
+		mode:                   MODE_BACKUP,
+		origMode:               MODE_BACKUP,
+		lock:                   sync.RWMutex{},
+		backups:                make(map[string]*SyncRoutine),
+		backupCh:               make(chan *pb.BackupEntry),
+		migrations:             make(map[string]*SyncRoutine),
+		versionCond:            sync.NewCond(&sync.Mutex{}),
+		modeChangeCond:         sync.NewCond(&sync.Mutex{}),
+		backupCond:             sync.NewCond(&sync.Mutex{}),
+		WatchMigrationStopChan: make(chan struct{}),
+		WatchWorkerStopChan:    make(chan struct{}),
+		SyncStopChan:           make(chan struct{}),
 	}, nil
 }
 
@@ -232,62 +253,64 @@ func (s *WorkerServer) DoSync() {
 	log := common.SugaredLog()
 	log.Infof("DOSYNC is up and running!")
 	for {
-		entry := <-s.backupCh
-		log.Infof("WRITING TO BACKUPS AND MIGRATIONS!")
-		s.lock.RLock()
-		// sync all backups and migrations
-		for _, routine := range s.backups {
-			if routine.Mask(entry.Key) {
-				routine.EntryCh <- entry
+		select {
+		case entry := <-s.backupCh:
+			log.Infof("WRITING TO BACKUPS AND MIGRATIONS!")
+			s.lock.RLock()
+			// sync all backups and migrations
+			for _, routine := range s.backups {
+				if routine.Mask(entry.Key) {
+					routine.EntryCh <- entry
+				}
 			}
-		}
-		for _, routine := range s.migrations {
-			if routine.Mask(entry.Key) {
-				routine.EntryCh <- entry
+			for _, routine := range s.migrations {
+				if routine.Mask(entry.Key) {
+					routine.EntryCh <- entry
+				}
 			}
-		}
-		s.lock.RUnlock()
+			s.lock.RUnlock()
 
-		log.Infof("WAITING FOR BACKUPS!")
-		// backup use semi-sync transfer, which means
-		// only one of them have to ack before going on.
-		if len(s.backups) > 0 {
-			s.backupCond.L.Lock()
-			for {
-				// update s.version
-				for _, routine := range s.backups {
-					if routine.Version > s.backupVersion {
-						s.backupVersion = routine.Version
+			log.Infof("WAITING FOR BACKUPS!")
+			// backup use semi-sync transfer, which means
+			// only one of them have to ack before going on.
+			if len(s.backups) > 0 {
+				s.backupCond.L.Lock()
+				for {
+					// update s.version
+					for _, routine := range s.backups {
+						if routine.Version > s.backupVersion {
+							s.backupVersion = routine.Version
+						}
+					}
+					if s.backupVersion < entry.Version {
+						s.backupCond.Wait()
+					} else {
+						s.backupCond.L.Unlock()
+						break
 					}
 				}
-				if s.backupVersion < entry.Version {
-					s.backupCond.Wait()
-				} else {
-					s.backupCond.L.Unlock()
-					break
-				}
 			}
-			s.backupCond.L.Unlock()
-		}
 
-		log.Infof("WAITING FOR MIGRATIONS!")
-		// migration use loss less transfer, which means each migration should complete
-		for _, routine := range s.migrations {
-			if !routine.Syncing {
-				continue
+			log.Infof("WAITING FOR MIGRATIONS!")
+			// migration use loss less transfer, which means each migration should complete
+			for _, routine := range s.migrations {
+				if !routine.Syncing {
+					continue
+				}
+				routine.Condition.L.Lock()
+				for routine.Version < entry.Version {
+					routine.Condition.Wait()
+				}
+				routine.Condition.L.Unlock()
 			}
-			routine.Condition.L.Lock()
-			for routine.Version < entry.Version {
-				routine.Condition.Wait()
-			}
-			routine.Condition.L.Unlock()
+			s.versionCond.L.Lock()
+			s.version = entry.Version
+			s.versionCond.L.Unlock()
+			s.versionCond.Broadcast()
+		case <-s.SyncStopChan:
+			return
 		}
-		s.versionCond.L.Lock()
-		s.version = entry.Version
-		s.versionCond.L.Unlock()
-		s.versionCond.Broadcast()
 	}
-	log.Infof("DOSYNC EXITED!")
 }
 
 func (s *WorkerServer) Put(_ context.Context, pair *pb.KVPair) (*pb.PutResponse, error) {
@@ -426,7 +449,8 @@ func (s *WorkerServer) RegisterToZk(conn *zk.Conn, weight float32) error {
 			}
 		}
 		// get from the last resp
-		s.NodeName = resps[len(resps)-1].String
+		fullName := resps[len(resps)-1].String
+		s.NodeName = path.Base(fullName)
 	} else {
 		// update configuration
 		bin, _, err := s.conn.Get(configPath)
@@ -451,17 +475,19 @@ func (s *WorkerServer) RegisterToZk(conn *zk.Conn, weight float32) error {
 		} else {
 			nodePath = path.Join(p, common.ZK_BACKUP_WORKER_NAME)
 		}
-		s.NodeName, err = s.conn.Create(nodePath, bin, zk.FlagSequence|zk.FlagEphemeral, zk.WorldACL(zk.PermAll))
+		fullName, err := s.conn.Create(nodePath, bin, zk.FlagSequence|zk.FlagEphemeral, zk.WorldACL(zk.PermAll))
 		if err != nil {
 			return err
 		}
+		s.NodeName = path.Base(fullName)
 	}
 	log.Info("Configuration initialized & registered to zookeeper", zap.Uint16("id", uint16(s.Id)))
 	return nil
 }
 
-// both worker and backup should do this
-func (s *WorkerServer) Watch(stopChan <-chan struct{}) {
+// watch other nodes belonging to the same worker,
+// both primary and backup should do this
+func (s *WorkerServer) Watch(stopChan chan struct{}) {
 	log := common.Log()
 	log.Info("Starting to watch worker nodes...", zap.Int("id", int(s.Id)))
 	p := path.Join(common.ZK_WORKERS_ROOT, strconv.Itoa(int(s.Id)))
@@ -472,6 +498,10 @@ func (s *WorkerServer) Watch(stopChan <-chan struct{}) {
 			break
 		}
 		if s.mode == MODE_PRIMARY {
+			// get primaries
+			primaries := common.FilterString(children, func(i int) bool {
+				return strings.Contains(children[i], common.ZK_PRIMARY_WORKER_NAME)
+			})
 			// get backups
 			backups := common.FilterString(children, func(i int) bool {
 				return strings.Contains(children[i], common.ZK_BACKUP_WORKER_NAME)
@@ -496,15 +526,79 @@ func (s *WorkerServer) Watch(stopChan <-chan struct{}) {
 				}
 			found:
 			}
+			// now check primaries
+			sort.Strings(primaries)
+			if len(primaries) > 1 && s.origMode != MODE_PRIMARY {
+				var newPrim string
+				for _, p := range primaries {
+					if p != s.NodeName {
+						newPrim = p
+						break
+					}
+				}
+				go func() {
+					log.Info("Migrating to new primary.", zap.String("nodeName", newPrim))
+					bin, _, err := s.conn.Get(path.Join(p, newPrim))
+					if err != nil {
+						log.Error("Failed to get new primary's metadata.", zap.Error(err))
+					}
+					var n common.WorkerNode
+					if err := json.Unmarshal(bin, &n); err != nil {
+						log.Error("Failed to unmarshal data.", zap.Error(err))
+					}
+					// connect through gRPC
+					connString := fmt.Sprintf("%s:%d", n.Host.Hostname, n.Host.Port)
+					conn, err := common.ConnectGrpc(connString)
+					if err != nil {
+						log.Error("Failed to connect to destination.", zap.Error(err))
+					}
+					client := pb.NewKVBackupClient(conn)
+					// mask
+					mask := func(key string) bool { return true }
+					// register replication strategy
+					routine := SyncRoutine{
+						name:    newPrim,
+						conn:    client,
+						Mask:    mask,
+						Syncing: false,
+						EntryCh: make(chan *pb.BackupEntry),
+						StopCh:  make(chan struct{}),
+					}
+					// register it to start recording new requests that should be broadcasted
+					s.migrations[newPrim] = &routine
+					log.Sugar().Infof("Sync routine for %s registered.", newPrim)
+					// keep preparing until success
+					for {
+						extracted := s.kv.Extract(mask, 0)
+						if err := routine.Prepare(extracted); err == nil {
+							break
+						}
+						println(reflect.TypeOf(err))
+						log.Error("Preparation failed, retrying...", zap.Error(err))
+						time.Sleep(2 * time.Second)
+					}
+					// make it sync
+					routine.Syncing = true
+					routine.Sync()
+					time.Sleep(1 * time.Second)
+					// now it's time to step down
+					if err := s.transformTo(MODE_BACKUP); err != nil {
+						log.Error("Failed to step down.", zap.Error(err))
+					}
+				}()
+			}
 		} else {
 			// backup logic
 			// check worker exist or not and begin election process
-			primary := common.FilterString(children, func(i int) bool {
+			primaries := common.FilterString(children, func(i int) bool {
 				return strings.Contains(children[i], common.ZK_PRIMARY_WORKER_NAME)
 			})
-			if len(primary) == 0 {
+			if len(primaries) == 0 {
+				log.Info("Primary down detected, beginning new primaries election...")
 				// worker down, begin election
-				s.BackupElection()
+				if err := s.BackupElection(); err != nil {
+					log.Error("Failed to perform election.", zap.Error(err))
+				}
 			}
 		}
 		select {
@@ -520,12 +614,15 @@ func (s *WorkerServer) BackupElection() error {
 	log := common.SugaredLog()
 	electionPath := path.Join(common.ZK_ELECTION_ROOT, strconv.Itoa(int(s.Id)))
 	if err := common.EnsurePath(s.conn, electionPath); err != nil {
+		log.Error("Failed to ensure path.", zap.Error(err))
 		return err
 	}
 	// register itself and watch
-	myName := fmt.Sprintf("%020d-%s", s.version, s.NodeName)
+	myName := fmt.Sprintf("%020d%s", s.version, s.NodeName)
+	log.Infof("Name to assign: %s\n", myName)
 	_, err := s.conn.Create(path.Join(electionPath, myName), []byte(s.NodeName), zk.FlagEphemeral, zk.WorldACL(zk.PermAll))
 	if err != nil {
+		log.Error("Failed to create node.", zap.Error(err))
 		return err
 	}
 	// get number of backup nodes
@@ -548,7 +645,13 @@ func (s *WorkerServer) BackupElection() error {
 			if children[0] == myName {
 				// i am the lucky guy
 				log.Infof("Seems like I am the lucky guy, upgrading...")
-				s.transformToPrimary()
+				if err := s.transformTo(MODE_PRIMARY); err != nil {
+					log.Error("Transformation failed.", zap.Error(err))
+					return err
+				}
+				log.Infof("Transformation successful.")
+			} else {
+				log.Infof("Not so lucky this time...")
 			}
 			break
 		}
@@ -557,11 +660,47 @@ func (s *WorkerServer) BackupElection() error {
 	return nil
 }
 
-func (s *WorkerServer) transformToPrimary() {
-	if s.mode != MODE_BACKUP {
-
+func (s *WorkerServer) transformTo(mode string) error {
+	if mode != MODE_PRIMARY && mode != MODE_BACKUP {
+		return errors.New("invalid mode")
 	}
-
+	if mode == s.mode {
+		return errors.New("no need for transformation")
+	}
+	// re-register itself in zookeeper
+	log := common.Log()
+	n := common.NewWorkerNode(s.Hostname, s.Port, s.Id)
+	bin, err := json.Marshal(n)
+	if err != nil {
+		return err
+	}
+	parentPath := path.Join(common.ZK_WORKERS_ROOT, strconv.Itoa(int(s.Id)))
+	var nodePath string
+	if mode == MODE_PRIMARY {
+		nodePath = path.Join(parentPath, common.ZK_PRIMARY_WORKER_NAME)
+	} else {
+		nodePath = path.Join(parentPath, common.ZK_BACKUP_WORKER_NAME)
+	}
+	log.Sugar().Infof("original path is %s", path.Join(parentPath, s.NodeName))
+	log.Sugar().Infof("new node path is %s", nodePath)
+	if err := s.conn.Delete(path.Join(parentPath, s.NodeName), -1); err != nil {
+		return err
+	}
+	name, err := s.conn.Create(nodePath, bin, zk.FlagEphemeral|zk.FlagSequence, zk.WorldACL(zk.PermAll))
+	if err != nil {
+		return err
+	}
+	s.NodeName = path.Base(name)
+	// successful, now restart goroutines
+	log.Info("Restarting goroutines...")
+	s.mode = mode
+	close(s.WatchMigrationStopChan)
+	close(s.WatchWorkerStopChan)
+	s.WatchMigrationStopChan = make(chan struct{})
+	s.WatchWorkerStopChan = make(chan struct{})
+	go s.Watch(s.WatchWorkerStopChan)
+	go s.WatchMigration(s.WatchWorkerStopChan)
+	return nil
 }
 
 // sync current backup routines with new backup array
@@ -594,8 +733,11 @@ func (s *WorkerServer) SyncBackups(newBackups []string) error {
 }
 
 // watch for migration stuff...
-func (s *WorkerServer) WatchMigration(stopChan <-chan struct{}) {
-	if s.mode != MODE_PRIMARY {
+func (s *WorkerServer) WatchMigration(stopChan chan struct{}) {
+	common.Log().Info("Watching migration...")
+	if s.mode == MODE_BACKUP {
+		// do nothing in backup mode
+		<-s.WatchMigrationStopChan
 		return
 	}
 	log := common.Log()
@@ -610,7 +752,7 @@ watchLoop:
 		}
 		if exists {
 			log.Info("Migration detected...", zap.Int("version", int(s.SlotTableVersion)))
-			if err := s.doMigration(stopChan); err != nil {
+			if err := s.doMigration(); err != nil {
 				log.Error("Failed to do migration.", zap.Error(err))
 			}
 		} else {
@@ -626,7 +768,7 @@ watchLoop:
 }
 
 // worker's migration logic
-func (s *WorkerServer) doMigration(stopChan <-chan struct{}) error {
+func (s *WorkerServer) doMigration() error {
 	if s.mode != MODE_PRIMARY {
 		return nil
 	}
@@ -714,7 +856,6 @@ func (s *WorkerServer) doMigration(stopChan <-chan struct{}) error {
 		return err
 	}
 	// wait for version number to change
-waitLoop:
 	for {
 		bin, _, eventChan, err := s.conn.GetW(path.Join(common.ZK_ROOT, common.ZK_VERSION_NAME))
 		if err != nil {
@@ -739,8 +880,6 @@ waitLoop:
 		select {
 		case <-eventChan:
 			continue
-		case <-stopChan:
-			break waitLoop
 		}
 	}
 	return nil

@@ -32,13 +32,12 @@ var (
 )
 
 var (
-	server            *grpc.Server
-	log               *zap.Logger
-	conn              *zk.Conn
-	watchStopChan     = make(chan struct{})
-	backupStopChan    = make(chan struct{})
-	migrationStopChan = make(chan struct{})
+	server *grpc.Server
+	log    *zap.Logger
+	conn   *zk.Conn
 )
+
+var wk *worker.WorkerServer
 
 // handle ctrl-c gracefully
 func setupCloseHandler() {
@@ -48,9 +47,11 @@ func setupCloseHandler() {
 		<-c
 		log.Info("Ctrl-C captured.")
 		log.Info("Sending stop signals...")
-		close(watchStopChan)
-		close(backupStopChan)
-		close(migrationStopChan)
+		if wk != nil {
+			close(wk.WatchWorkerStopChan)
+			close(wk.WatchMigrationStopChan)
+			close(wk.SyncStopChan)
+		}
 		if server != nil {
 			log.Info("Gracefully stopping gRPC server...")
 			server.GracefulStop()
@@ -115,8 +116,8 @@ func main() {
 	}
 
 	// start watching worker metadata changes, and do backup broadcasting
-	go workerServer.Watch(watchStopChan)
-	go workerServer.WatchMigration(migrationStopChan)
+	go workerServer.Watch(workerServer.WatchWorkerStopChan)
+	go workerServer.WatchMigration(workerServer.WatchMigrationStopChan)
 	go workerServer.DoSync()
 
 	// open tcp socket
