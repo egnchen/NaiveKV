@@ -191,14 +191,13 @@ func GetWorker(conn *zk.Conn, id WorkerId) (Worker, error) {
 				return Worker{}, err
 			}
 			worker.Weight = config.Weight
-			worker.NumBackups = config.NumBackups
 		}
 		var node WorkerNode
 		if err := json.Unmarshal(bin, &node); err != nil {
 			return Worker{}, err
 		}
 		if strings.Contains(c, ZK_PRIMARY_WORKER_NAME) {
-			// primary node
+			// worker node
 			worker.PrimaryName = c
 			worker.Primary = &node
 		} else if strings.Contains(c, ZK_BACKUP_WORKER_NAME) {

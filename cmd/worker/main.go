@@ -21,13 +21,13 @@ import (
 )
 
 var (
-	hostname   = flag.String("hostname", "localhost", "The server's hostname")
-	port       = flag.Int("port", 7900, "The server port")
-	filePath   = flag.String("path", ".", "Path for persistent log and slot file.")
-	id         = flag.Int("id", -1, "Worker id, new worker if not set.")
-	weight     = flag.Float64("weight", 10.0, "Weight for new worker.")
-	numBackups = flag.Int("backup", 2, "Number of backups.")
-	zkServers  = strings.Fields(*flag.String("zk-servers", "localhost:2181",
+	hostname  = flag.String("hostname", "localhost", "The server's hostname")
+	port      = flag.Int("port", 7900, "The server port")
+	mode      = flag.String("mode", worker.MODE_PRIMARY, "The server's mode, primary or backup")
+	filePath  = flag.String("path", ".", "Path for persistent log and slot file.")
+	id        = flag.Int("id", -1, "Worker id, new worker if not set.")
+	weight    = flag.Float64("weight", 10.0, "Weight for new worker.")
+	zkServers = strings.Fields(*flag.String("zk-servers", "localhost:2181",
 		"Zookeeper server cluster, separated by space"))
 )
 
@@ -78,6 +78,9 @@ func main() {
 
 	// initialize workerServer server
 	if *id == -1 {
+		if *mode == worker.MODE_BACKUP {
+			log.Panic("You have to specify an ID when using backup mode!")
+		}
 		log.Info("Getting new id from zookeeper...")
 		// get new id
 		i := common.DistributedAtomicInteger{
@@ -88,14 +91,26 @@ func main() {
 		if err != nil {
 			log.Panic("Failed to get new worker id.", zap.Error(err))
 		}
+	}
+	// determine file path
+	if *mode == worker.MODE_PRIMARY {
 		*filePath = fmt.Sprintf("tmp/data%d", *id)
+	} else if *mode == worker.MODE_BACKUP {
+		*filePath = fmt.Sprintf("tmp/data-backup%d", *id)
 	}
-	workerServer, err := worker.NewPrimaryServer(*hostname, uint16(*port), *filePath, common.WorkerId(*id))
-	if err != nil {
-		log.Panic("Failed to initialize workerServer object.", zap.Error(err))
+	var workerServer *worker.WorkerServer
+	if *mode == worker.MODE_PRIMARY {
+		workerServer, err = worker.NewPrimaryServer(*hostname, uint16(*port), *filePath, common.WorkerId(*id))
+		if err != nil {
+			panic(err)
+		}
+	} else if *mode == worker.MODE_BACKUP {
+		workerServer, err = worker.NewBackupServer(*hostname, uint16(*port), *filePath, common.WorkerId(*id))
+		if err != nil {
+			panic(err)
+		}
 	}
-
-	if err := workerServer.RegisterToZk(conn, float32(*weight), *numBackups); err != nil {
+	if err := workerServer.RegisterToZk(conn, float32(*weight)); err != nil {
 		log.Panic("Failed to register to zookeeper.", zap.Error(err))
 	}
 
@@ -112,6 +127,7 @@ func main() {
 	// create, register & start gRPC server
 	server := common.NewGrpcServer()
 	pb.RegisterKVWorkerServer(server, workerServer)
+	pb.RegisterKVBackupServer(server, workerServer)
 	pb.RegisterKVWorkerInternalServer(server, workerServer)
 	defer server.GracefulStop()
 	if err := server.Serve(listener); err != nil {

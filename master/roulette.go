@@ -10,15 +10,10 @@ type RouletteAllocator struct{}
 // This method is based on roulette algorithm
 // We use a better strategy here, create an array of slot ids and shuffle it
 // and then split the array according to their weights
-func (r RouletteAllocator) AllocateSlots(ring *common.HashSlotRing,
-	oldWorkers map[common.WorkerId]*common.Worker, newWorkers map[common.WorkerId]*common.Worker) (common.MigrationTable, error) {
+func (r RouletteAllocator) AllocateSlots(ring *common.HashSlotRing, oldWorkers map[common.WorkerId]*common.Worker, newWorker *common.Worker) (common.MigrationTable, error) {
 	slog := common.SugaredLog()
 	table := common.MigrationTable{}
 	// print new workers for inspection
-	slog.Info("New workers:")
-	for _, w := range newWorkers {
-		slog.Infof("worker %d weight %f", w.Id, w.Weight)
-	}
 	if len(oldWorkers) == 0 {
 		slog.Info("Initializing new hash ring...")
 		slotArr := make([]common.SlotId, len(*ring))
@@ -28,7 +23,9 @@ func (r RouletteAllocator) AllocateSlots(ring *common.HashSlotRing,
 		// shuffle it
 		slotArr = r.selectFrom(slotArr, len(slotArr))
 		// distribute it to different new workers
-		r.distributeTo(slotArr, &table, newWorkers)
+		for _, slot := range slotArr {
+			table[slot] = newWorker.Id
+		}
 	} else {
 		// already allocated before, we need to add new node to the hash ring
 		// to make things easier we change the data structure here...
@@ -44,12 +41,9 @@ func (r RouletteAllocator) AllocateSlots(ring *common.HashSlotRing,
 		for _, n := range oldWorkers {
 			oldWeight += n.Weight
 		}
-		var newWeight float32 = 0
-		for _, n := range newWorkers {
-			newWeight += n.Weight
-		}
+		var newWeight = newWorker.Weight
 		toAllocate := uint32(float32(len(*ring))*newWeight/(newWeight+oldWeight) + 0.5)
-		slog.Infof("To allocate: %d", toAllocate)
+		slog.Infof("Amount of allocation: %d", toAllocate)
 
 		var w float32 = 0
 		idxStart := 0
@@ -57,8 +51,10 @@ func (r RouletteAllocator) AllocateSlots(ring *common.HashSlotRing,
 			worker := oldWorkers[id]
 			w += worker.Weight
 			idxEnd := int(float32(toAllocate)*w/oldWeight + 0.5)
-			s := r.selectFrom(slots, idxEnd-idxStart)
-			r.distributeTo(s, &table, newWorkers)
+			chosen := r.selectFrom(slots, idxEnd-idxStart)
+			for _, s := range chosen {
+				table[s] = newWorker.Id
+			}
 			idxStart = idxEnd
 		}
 	}
@@ -72,24 +68,4 @@ func (r RouletteAllocator) selectFrom(slots []common.SlotId, count int) []common
 	}
 	rand.Shuffle(len(slots), func(i int, j int) { slots[i], slots[j] = slots[j], slots[i] })
 	return slots[:count]
-}
-
-// distribute slots to different new workers according to their weights
-func (r RouletteAllocator) distributeTo(slots []common.SlotId, table *common.MigrationTable, newWorkers map[common.WorkerId]*common.Worker) {
-	slog := common.SugaredLog()
-	var totalWeight int64 = 0
-	for _, n := range newWorkers {
-		totalWeight += int64(n.Weight)
-	}
-	var prevWeight int64 = 0
-	l := int64(len(slots))
-	for _, n := range newWorkers {
-		startIdx := prevWeight * l / totalWeight
-		endIdx := (prevWeight + int64(n.Weight)) * l / totalWeight
-		slog.Infof("Roulette: distributing %d slots to primary %d.", endIdx-startIdx, n.Id)
-		for _, s := range slots[startIdx:endIdx] {
-			(*table)[s] = n.Id
-		}
-		prevWeight += int64(n.Weight)
-	}
 }

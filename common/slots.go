@@ -31,7 +31,7 @@ func (ring HashSlotRing) GetSlotId(key string) SlotId {
 }
 
 type MigrationTable map[SlotId]WorkerId
-type SlotMigration struct {
+type Migration struct {
 	Version uint32
 	Table   MigrationTable
 }
@@ -39,8 +39,7 @@ type SlotMigration struct {
 // An allocator handles slot migration. Given a set of new workers,
 // it should be able to yield a valid migration table.
 type HashSlotAllocator interface {
-	AllocateSlots(ring *HashSlotRing,
-		oldWorkers map[WorkerId]*Worker, newWorkers map[WorkerId]*Worker) (MigrationTable, error)
+	AllocateSlots(ring *HashSlotRing, oldWorkers map[WorkerId]*Worker, newWorker *Worker) (MigrationTable, error)
 }
 
 type SingleNodeMigration struct {
@@ -60,13 +59,17 @@ func (r SingleNodeMigration) GetDestId(key string) WorkerId {
 	}
 }
 
-func NewSingleNodeMigration(id WorkerId, original *HashSlotRing, migration *SlotMigration) *SingleNodeMigration {
+func NewSingleNodeMigration(id WorkerId, original *HashSlotRing, migration *Migration) *SingleNodeMigration {
 	table := make(MigrationTable)
-	for slot, srcId := range *original {
+	stat := make(map[WorkerId]int)
+	for slotId, dstId := range migration.Table {
+		srcId := original.GetWorkerIdDirect(slotId)
 		if srcId == id {
-			table[SlotId(slot)] = migration.Table[SlotId(slot)]
+			table[slotId] = dstId
+			stat[dstId] += 1
 		}
 	}
+	SugaredLog().Infof("Separated stat for id %d: %+v", id, stat)
 	return &SingleNodeMigration{
 		Version: migration.Version,
 		Id:      id,
@@ -76,42 +79,18 @@ func NewSingleNodeMigration(id WorkerId, original *HashSlotRing, migration *Slot
 }
 
 // separate an overall migration plan to small plans specific to different nodes
-func (m *SlotMigration) Separate(original *HashSlotRing) map[WorkerId]*SingleNodeMigration {
-	// stat how many workers
+func (m *Migration) Separate(original *HashSlotRing) map[WorkerId]*SingleNodeMigration {
+	// stat how many workers in the original hash ring
 	ret := make(map[WorkerId]*SingleNodeMigration)
-	for _, dstId := range m.Table {
-		if _, ok := ret[dstId]; !ok {
-			ret[dstId] = nil
+	for slotId, _ := range m.Table {
+		srcId := original.GetWorkerIdDirect(slotId)
+		if srcId == 0 {
+			continue
 		}
+		ret[srcId] = nil
 	}
 	for i := range ret {
 		ret[i] = NewSingleNodeMigration(i, original, m)
 	}
-	SugaredLog().Infof("%+v", ret)
 	return ret
 }
-
-//
-//type RingBoolVector struct {
-//	Vector []uint8
-//}
-//
-//func (r RingBoolVector) GetSlotId(key string) SlotId {
-//	return GetSlotId(key, len(r.Vector))
-//}
-//
-//func (r RingBoolVector) Set(id SlotId, value bool) {
-//	if value {
-//		r.Vector[id/8] |= 1 << (id % 8)
-//	} else {
-//		r.Vector[id/8] ^= ^(1 << (id % 8))
-//	}
-//}
-//
-//func (r RingBoolVector) Get(id SlotId) bool {
-//	return r.Vector[id/8]&(1<<(id%8)) > 0
-//}
-//
-//func (r RingBoolVector) GetByKey(key string) bool {
-//	return r.Get(r.GetSlotId(key))
-//}

@@ -41,7 +41,7 @@ func NewMasterServer(hostname string, port uint16) Server {
 }
 
 // Migration procedure. First calculate migration table and commit it to zookeeper,
-// then wait for all primary worker to pick up & complete migration(in sync with the destination worker),
+// then wait for all worker worker to pick up & complete migration(in sync with the destination worker),
 // finally commit the new version number & new hash slot table to zookeeper & start serving the latest slot table.
 // Commit point is after the new version number & hash slot table being committed to zookeeper.
 func (m *Server) doMigration(newWorkers map[common.WorkerId]*common.Worker) {
@@ -49,19 +49,15 @@ func (m *Server) doMigration(newWorkers map[common.WorkerId]*common.Worker) {
 	m.migrationLock.Lock()
 	defer m.migrationLock.Unlock()
 	// allocate slots
-	table, err := m.allocator.AllocateSlots(&m.slots, m.workers, newWorkers)
+	migration, err := m.calcMigration(newWorkers)
 	if err != nil {
 		log.Error("Failed to allocate slots.", zap.Error(err))
-	}
-	migration := &common.SlotMigration{
-		Version: m.version,
-		Table:   table,
 	}
 	completeSem, err := m.syncMigration(migration)
 	if err != nil {
 		log.Error("Failed to sync migration information to zookeeper.", zap.Error(err))
 	}
-	log.Infof("Migration plan version %d successfully distributed.", migration.Version)
+	log.Infof("Migration plan version %d successfully uploaded.", migration.Version)
 	if err := completeSem.Watch(func(newValue int) bool { return newValue > 0 }); err != nil {
 		log.Error("Failed to watch semaphore.", zap.Error(err))
 	}
@@ -129,7 +125,7 @@ func (m *Server) doMigration(newWorkers map[common.WorkerId]*common.Worker) {
 
 // upload migration information to zookeeper
 // contains individual migration plan and a semaphore with value set
-func (m *Server) syncMigration(migration *common.SlotMigration) (*common.DistributedAtomicInteger, error) {
+func (m *Server) syncMigration(migration *common.Migration) (*common.DistributedAtomicInteger, error) {
 	log := common.SugaredLog()
 	if migration.Version != m.version {
 		return nil, errors.New("migration version mismatch")
@@ -332,7 +328,7 @@ func (m *Server) Watch(stopChan <-chan struct{}) {
 			if !recvOK {
 				log.Info("Worker node watcher closed.")
 			}
-			// change in worker root, new primary worker
+			// change in worker root, new worker worker
 			children, _, w, err := m.conn.ChildrenW(common.ZK_WORKERS_ROOT)
 			if err != nil {
 				log.Error("Failed to watch worker root again.", zap.Error(err))
@@ -386,13 +382,27 @@ func (m *Server) Watch(stopChan <-chan struct{}) {
 	}
 }
 
-func (m *Server) allocateSlots(newWorkers map[common.WorkerId]*common.Worker) (*common.SlotMigration, error) {
-	table, err := m.allocator.AllocateSlots(&m.slots, m.workers, newWorkers)
-	if err != nil {
-		return nil, err
+// allocate slots for new workers
+// this function supports multiple new workers
+func (m *Server) calcMigration(newWorkers map[common.WorkerId]*common.Worker) (*common.Migration, error) {
+	slog := common.SugaredLog()
+	slots := common.NewHashSlotRing()
+	finalTable := make(common.MigrationTable)
+	copy(slots, m.slots)
+	for _, nw := range newWorkers {
+		slog.Infof("Allocating slots for new worker %d", nw.Id)
+		table, err := m.allocator.AllocateSlots(&slots, m.workers, nw)
+		if err != nil {
+			return nil, err
+		}
+		// do modification on the local copy
+		for k, v := range table {
+			slots[k] = v
+			finalTable[k] = v
+		}
 	}
-	return &common.SlotMigration{
+	return &common.Migration{
 		Version: m.version,
-		Table:   table,
+		Table:   finalTable,
 	}, nil
 }

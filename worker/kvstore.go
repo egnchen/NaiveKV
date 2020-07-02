@@ -96,6 +96,7 @@ func (kv *SimpleKV) getTransaction(transactionId int) *TransactionStruct {
 }
 
 func (kv *SimpleKV) Get(key string, transactionId int) (string, error) {
+	common.SugaredLog().Infof("SIMPLEKV GET %s %d", key, transactionId)
 	// get does not require logging
 	// lookup layer by layer
 	t := kv.getTransaction(transactionId)
@@ -136,6 +137,7 @@ func (kv *SimpleKV) Get(key string, transactionId int) (string, error) {
 }
 
 func (kv *SimpleKV) Put(key string, value string, transactionId int) (uint64, error) {
+	common.SugaredLog().Infof("SIMPLEKV PUT %s %s %d", key, value, transactionId)
 	t := kv.getTransaction(transactionId)
 	if t == nil {
 		return 0, EINVTRANS
@@ -157,6 +159,7 @@ func (kv *SimpleKV) Put(key string, value string, transactionId int) (uint64, er
 // Make sure that key is removed from KVStore, regardless of whether it exists beforehand or not.
 // You should check if the key exists in the KV beforehand, otherwise this API could thrash the KV.
 func (kv *SimpleKV) Delete(key string, transactionId int) (uint64, error) {
+	common.SugaredLog().Infof("SIMPLEKV DELETE %s %d", key, transactionId)
 	t := kv.getTransaction(transactionId)
 	if t == nil {
 		return 0, EINVTRANS
@@ -181,7 +184,8 @@ func (kv *SimpleKV) StartTransaction() (transactionId int, err error) {
 	defer kv.tLock.Unlock()
 	for i, u := range kv.transactions {
 		if u == nil {
-			kv.writeLog("start", strconv.FormatInt(int64(transactionId), 16))
+			common.SugaredLog().Infof("SIMPLEKV START %d", i)
+			kv.writeLog("start", strconv.FormatInt(int64(i), 16))
 			kv.transactions[i] = &TransactionStruct{
 				Lock:  sync.RWMutex{},
 				Layer: make(map[string]ValueWithVersion),
@@ -199,6 +203,7 @@ func (kv *SimpleKV) Rollback(transactionId int) error {
 	kv.tLock.Lock()
 	defer kv.tLock.Unlock()
 	if kv.transactions[transactionId] != nil {
+		common.SugaredLog().Infof("SIMPLEKV ROLLBACK %d", transactionId)
 		kv.writeLog("rollback", strconv.FormatInt(int64(transactionId), 16))
 		kv.transactions[transactionId] = nil
 		return nil
@@ -209,6 +214,7 @@ func (kv *SimpleKV) Rollback(transactionId int) error {
 
 // transaction zero can also be committed, but committing zero does not perform any operation
 func (kv *SimpleKV) Commit(transactionId int) error {
+	common.SugaredLog().Infof("SIMPLEKV COMMIT %d", transactionId)
 	if transactionId < 0 || transactionId >= TRANSACTION_COUNT {
 		return EINVTRANS
 	}
@@ -254,6 +260,7 @@ func (kv *SimpleKV) Checkpoint() error {
 
 	// only one checkpoint operation can happen at a time
 	kv.checkpointLock.Lock()
+	common.SugaredLog().Infof("SIMPLEKV CKPT")
 	defer kv.checkpointLock.Unlock()
 	// calculate new base
 	b := make(map[string]ValueWithVersion)
@@ -318,6 +325,7 @@ func (kv *SimpleKV) writeLog(op string, args ...string) {
 
 // flush log
 func (kv *SimpleKV) Flush() {
+	common.SugaredLog().Infof("SIMPLEKV FLUSHING")
 	if err := kv.logFile.Sync(); err != nil {
 		common.Log().Error("Failed to flush log.", zap.Error(err))
 	}
@@ -387,7 +395,10 @@ func NewKVStore(pathString string) (*SimpleKV, error) {
 			return nil, err
 		}
 		scanner := bufio.NewScanner(logFile)
-		latest, _, err = ReadLog(scanner)
+		latest, version, err = ReadLog(scanner)
+		if latest == nil {
+			latest = make(map[string]ValueWithVersion)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -445,34 +456,34 @@ func ReadLog(scanner *bufio.Scanner) (map[string]ValueWithVersion, uint64, error
 		switch tokens[0] {
 		case "put":
 			if len(tokens) < 4 {
-				panic(nil)
+				panic(0)
 			}
 			key := readString(tokens[1])
 			value := readString(tokens[2])
 			transNum := int(readNum(tokens[3], 16))
 			if trans[transNum] == nil {
-				panic(nil)
+				panic(0)
 			}
 			if transNum == 0 {
 				// get version number
 				if len(tokens) < 5 {
-					panic(nil)
+					panic(0)
 				}
 				version = readNum(tokens[4], 16)
 			}
 			trans[transNum][key] = ValueWithVersion{Value: &value, Version: version}
 		case "del":
 			if len(tokens) < 3 {
-				panic(nil)
+				panic(0)
 			}
 			key := readString(tokens[1])
 			transNum := int(readNum(tokens[2], 16))
 			if trans[transNum] == nil {
-				panic(nil)
+				panic(0)
 			}
 			if transNum == 0 {
 				if len(tokens) < 4 {
-					panic(nil)
+					panic(0)
 				}
 				version = readNum(tokens[3], 16)
 			}
@@ -480,21 +491,21 @@ func ReadLog(scanner *bufio.Scanner) (map[string]ValueWithVersion, uint64, error
 		case "start":
 			// start transaction
 			if len(tokens) < 2 {
-				panic(nil)
+				panic(0)
 			}
 			transNum := int(readNum(tokens[1], 16))
 			if trans[transNum] != nil {
-				panic(nil)
+				panic(0)
 			}
 			trans[transNum] = make(map[string]ValueWithVersion)
 		case "commit":
 			// commit transaction
 			if len(tokens) != 3 {
-				panic(nil)
+				panic(0)
 			}
 			transNum := int(readNum(tokens[1], 16))
 			if trans[transNum] == nil {
-				panic(nil)
+				panic(0)
 			}
 			// merge into trans[0]
 			for k, v := range trans[transNum] {
@@ -504,16 +515,20 @@ func ReadLog(scanner *bufio.Scanner) (map[string]ValueWithVersion, uint64, error
 			version = readNum(tokens[2], 16)
 		case "rollback":
 			if len(tokens) != 2 {
-				panic(nil)
+				panic(0)
 			}
 			transNum := int(readNum(tokens[1], 16))
 			if trans[transNum] == nil {
-				panic(nil)
+				panic(0)
 			}
 			trans[transNum] = nil
 		default:
 			panic(nil)
 		}
+	}
+	if trans[0] == nil {
+		log.Warn("Nil trans[0] detected")
+		trans[0] = make(map[string]ValueWithVersion)
 	}
 	return trans[0], version, nil
 }

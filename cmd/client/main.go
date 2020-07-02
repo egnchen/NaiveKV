@@ -52,7 +52,7 @@ func getConnectionString(key string) (string, error) {
 	k := pb.Key{Key: key}
 	resp, err := masterClient.GetWorkerByKey(ctx, &k)
 	if err != nil {
-		log.Warn("Failed to get primary node.",
+		log.Warn("Failed to get worker node.",
 			zap.String("key", key), zap.Error(err))
 		return "", err
 	}
@@ -76,7 +76,7 @@ func getWorkerClient(key string) (pb.KVWorkerClient, error) {
 	if !ok {
 		conn, err := common.ConnectGrpc(connString)
 		if err != nil {
-			log.Error("Failed to connect to primary.", zap.Error(err))
+			log.Error("Failed to connect to worker.", zap.Error(err))
 			return nil, err
 		}
 		log.Info("Connected.", zap.Any("conn", conn))

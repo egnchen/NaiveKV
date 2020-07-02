@@ -7,10 +7,11 @@ const (
 	ZK_ROOT                = "/kv"
 	ZK_WORKERS_ROOT        = "/kv/workers"
 	ZK_MIGRATIONS_ROOT     = "/kv/migrations"
+	ZK_ELECTION_ROOT       = "/kv/election"
 	ZK_MASTER_NAME         = "master"
 	ZK_MASTER_ROOT         = "/kv/masters"
 	ZK_VERSION_NAME        = "version"
-	ZK_PRIMARY_WORKER_NAME = "primary"
+	ZK_PRIMARY_WORKER_NAME = "worker"
 	ZK_BACKUP_WORKER_NAME  = "backup"
 	ZK_WORKER_ID_NAME      = "workerId"
 	ZK_TABLE_NAME          = "table"
@@ -23,7 +24,7 @@ type Node struct {
 	Port     uint16
 }
 
-// KV store primary id. This id is mainly for slot allocations.
+// KV store worker id. This id is mainly for slot allocations.
 type WorkerId int
 
 type SlotId uint16
@@ -59,20 +60,18 @@ func NewWorkerNode(hostname string, port uint16, id WorkerId) WorkerNode {
 }
 
 // Worker metadata
-// A primary represents a set of primary nodes, including one primary node and several backup nodes.
-// A primary is identified by its primary id.
+// A worker represents a set of worker nodes, including one worker node and several backup nodes.
+// A worker is identified by its worker id.
 type Worker struct {
-	Id         WorkerId
-	Weight     float32
-	NumBackups int
-	Watcher    <-chan zk.Event
-	// here primary & backup nodes are represented by corresponding znode names.
+	Id      WorkerId
+	Weight  float32
+	Watcher <-chan zk.Event
+	// here worker & backup nodes are represented by corresponding znode names.
 	Primary     *WorkerNode
 	PrimaryName string
 	Backups     map[string]*WorkerNode
 }
 
 type WorkerConfig struct {
-	Weight     float32
-	NumBackups int
+	Weight float32
 }

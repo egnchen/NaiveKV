@@ -42,4 +42,5 @@ enum Status {
   ENOENT = 1;
   ENOSERVER = 2;
   EFAILED = 3;
+  EINVSERVER = 4;
 }

@@ -20,14 +20,14 @@ type SyncRoutine struct {
 	StopCh    chan struct{}
 }
 
-func NewSyncRoutine(name string, client pb.KVBackupClient, mask func(string) bool) SyncRoutine {
+func NewSyncRoutine(name string, client pb.KVBackupClient, mask func(string) bool, c *sync.Cond) SyncRoutine {
 	return SyncRoutine{
 		name:      name,
 		conn:      client,
 		Mask:      mask,
 		EntryCh:   make(chan *pb.BackupEntry),
 		Version:   0,
-		Condition: sync.NewCond(&sync.Mutex{}),
+		Condition: c,
 		Syncing:   false,
 		StopCh:    make(chan struct{}),
 	}
@@ -67,7 +67,9 @@ func (s *SyncRoutine) Prepare(content map[string]ValueWithVersion) error {
 		version = ent.Version
 	}
 	repl, err := client.CloseAndRecv()
+	println(err)
 	if err != nil {
+		log.Fatal("Close & recv got error.", zap.Error(err))
 		return err
 	}
 	if repl.Version == version {
