@@ -2,7 +2,6 @@ package common
 
 import (
 	"encoding/json"
-	"fmt"
 	"github.com/samuel/go-zookeeper/zk"
 	"go.uber.org/zap"
 	"path"
@@ -11,17 +10,8 @@ import (
 	"time"
 )
 
-func ZkStateString(s *zk.Stat) string {
-	return fmt.Sprintf("Czxid:%d, Mzxid: %d, Ctime: %d, Mtime: %d, "+
-		"Version: %d, Cversion: %d, Aversion: %d, "+
-		"EphemeralOwner: %d, DataLength: %d, NumChildren: %d, Pzxid: %d",
-		s.Czxid, s.Mzxid, s.Ctime, s.Mtime,
-		s.Version, s.Cversion, s.Aversion,
-		s.EphemeralOwner, s.DataLength, s.NumChildren, s.Pzxid)
-}
-
 func ConnectToZk(servers []string) (*zk.Conn, error) {
-	conn, _, err := zk.Connect(servers, time.Second*3)
+	conn, _, err := zk.Connect(servers, 500*time.Millisecond)
 	if err == nil {
 		conn.SetLogger(&ZkLoggerAdapter{})
 	}
@@ -148,6 +138,8 @@ func (i DistributedAtomicInteger) SetDefault(v int) error {
 	return nil
 }
 
+// Watch the integer. Trigger the watcher function once change is detected.
+// The watch will continue if watcher function returns true.
 func (i DistributedAtomicInteger) Watch(watcher func(newValue int) bool) error {
 	for {
 		bin, _, eventChan, err := i.Conn.GetW(i.Path)
@@ -165,49 +157,59 @@ func (i DistributedAtomicInteger) Watch(watcher func(newValue int) bool) error {
 	}
 }
 
-func GetFromZk(conn *zk.Conn, path string) []byte {
+func ZkGet(conn *zk.Conn, path string, dest interface{}) error {
 	content, _, err := conn.Get(path)
 	if err != nil {
-		Log().Error("Failed to retrieve content from zookeeper.", zap.String("path", path), zap.Error(err))
-		return nil
+		return err
 	}
-	return content
+	return json.Unmarshal(content, dest)
 }
 
-func GetWorker(conn *zk.Conn, id WorkerId) (Worker, error) {
-	p := path.Join(ZK_WORKERS_ROOT, strconv.Itoa(int(id)))
-	children, _, eventChan, err := conn.ChildrenW(p)
+func ZkCreate(conn *zk.Conn, path string, content interface{}, sequential bool, ephemeral bool) (string, error) {
+	bin, err := json.Marshal(content)
 	if err != nil {
-		return Worker{}, err
+		return "", err
 	}
-	var worker Worker
-	worker.Id = id
-	worker.Watcher = eventChan
-	worker.Backups = make(map[string]*WorkerNode)
-	for _, c := range children {
-		bin := GetFromZk(conn, path.Join(p, c))
-		if c == "config" {
-			var config WorkerConfig
-			if err := json.Unmarshal(bin, &config); err != nil {
-				return Worker{}, err
-			}
-			worker.Weight = config.Weight
-		}
-		var node WorkerNode
-		if err := json.Unmarshal(bin, &node); err != nil {
-			return Worker{}, err
-		}
-		if strings.Contains(c, ZK_PRIMARY_WORKER_NAME) {
-			// worker node
-			worker.PrimaryName = c
-			worker.Primary = &node
-		} else if strings.Contains(c, ZK_BACKUP_WORKER_NAME) {
-			worker.Backups[c] = &node
-		} else if c == "config" {
+	var f int32 = 0
+	if sequential {
+		f |= zk.FlagSequence
+	}
+	if ephemeral {
+		f |= zk.FlagEphemeral
+	}
+	name, err := conn.Create(path, bin, f, zk.WorldACL(zk.PermAll))
+	return name, err
+}
 
-		} else {
-			Log().Warn("Cannot determine node, skipping", zap.String("name", c))
+func ZkDeleteRecursive(conn *zk.Conn, p string) error {
+	children, _, err := conn.Children(p)
+	if err == zk.ErrNoNode {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	for _, c := range children {
+		if err := ZkDeleteRecursive(conn, path.Join(p, c)); err != nil {
+			return err
 		}
 	}
-	return worker, nil
+	if err := conn.Delete(p, -1); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ZkMulti(conn *zk.Conn, reqs ...interface{}) ([]zk.MultiResponse, error) {
+	log := SugaredLog()
+	resps, err := conn.Multi(reqs...)
+	if err != nil {
+		log.Error("Failed to update table & version number.", zap.Error(err))
+		for i, resp := range resps {
+			if resp.Error != nil {
+				log.Errorf("Request #%d(%v) failed: %+v", i, reqs[i], resp.Error)
+				return resps, resp.Error
+			}
+		}
+	}
+	return resps, err
 }

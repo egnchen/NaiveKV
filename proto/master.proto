@@ -9,6 +9,7 @@ option go_package = "proto";
 import "common.proto";
 
 service KVMaster {
+  rpc GetWorkerById(WorkerId) returns (GetWorkerResponse) {}
   rpc GetWorkerByKey(Key) returns (GetWorkerResponse) {}
 }
 

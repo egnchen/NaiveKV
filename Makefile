@@ -4,7 +4,7 @@
 .PHONY: kill-port
 
 zookeeper:
-	docker run --name kv-zookeeper --restart always -d eyek/kv-zookeeper:1.0
+	docker run --name kv-zookeeper --restart always -d -p 2181:2181 eyek/kv-zookeeper:1.0
 
 master:
 	go run cmd/master/main.go

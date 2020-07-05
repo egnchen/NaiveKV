@@ -1,7 +1,13 @@
 // decl: common Data structures & constants
 package common
 
-import "github.com/samuel/go-zookeeper/zk"
+import (
+	"github.com/samuel/go-zookeeper/zk"
+	"go.uber.org/zap"
+	"path"
+	"strconv"
+	"strings"
+)
 
 const (
 	ZK_ROOT                = "/kv"
@@ -26,8 +32,6 @@ type Node struct {
 
 // KV store worker id. This id is mainly for slot allocations.
 type WorkerId int
-
-type SlotId uint16
 
 type MasterNode struct {
 	Host Node
@@ -70,8 +74,48 @@ type Worker struct {
 	Primary     *WorkerNode
 	PrimaryName string
 	Backups     map[string]*WorkerNode
+	NumBackups  int
 }
 
 type WorkerConfig struct {
-	Weight float32
+	Weight     float32
+	NumBackups int
+}
+
+// get a worker instance from zookeeper
+func GetWorker(conn *zk.Conn, id WorkerId) (Worker, error) {
+	p := path.Join(ZK_WORKERS_ROOT, strconv.Itoa(int(id)))
+	children, _, eventChan, err := conn.ChildrenW(p)
+	if err != nil {
+		return Worker{}, err
+	}
+	var worker Worker
+	worker.Id = id
+	worker.Watcher = eventChan
+	worker.Backups = make(map[string]*WorkerNode)
+	for _, c := range children {
+		if strings.Contains(c, ZK_PRIMARY_WORKER_NAME) || strings.Contains(c, ZK_BACKUP_WORKER_NAME) {
+			// worker node
+			var node WorkerNode
+			if err := ZkGet(conn, path.Join(p, c), &node); err != nil {
+				return Worker{}, err
+			}
+			if strings.Contains(c, ZK_PRIMARY_WORKER_NAME) {
+				worker.PrimaryName = c
+				worker.Primary = &node
+			} else {
+				worker.Backups[c] = &node
+			}
+		} else if c == ZK_WORKER_CONFIG_NAME {
+			var config WorkerConfig
+			if err := ZkGet(conn, path.Join(p, c), &config); err != nil {
+				return Worker{}, err
+			}
+			worker.Weight = config.Weight
+			worker.NumBackups = config.NumBackups
+		} else {
+			Log().Warn("Cannot determine node, skipping", zap.String("name", c))
+		}
+	}
+	return worker, nil
 }

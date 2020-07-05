@@ -49,7 +49,6 @@ func (m *Server) doMigration(newWorkers map[common.WorkerId]*common.Worker) {
 	log := common.SugaredLog()
 	m.migrationLock.Lock()
 	defer m.migrationLock.Unlock()
-	// allocate slots
 	migration, err := m.calcMigration(newWorkers)
 	if err != nil {
 		log.Error("Failed to allocate slots.", zap.Error(err))
@@ -62,7 +61,7 @@ func (m *Server) doMigration(newWorkers map[common.WorkerId]*common.Worker) {
 	if err := completeSem.Watch(func(newValue int) bool { return newValue > 0 }); err != nil {
 		log.Error("Failed to watch semaphore.", zap.Error(err))
 	}
-	log.Infof("Successfully migrated %d slots, committing...", len(migration.Table))
+	log.Infof("Successfully migrated %d slots.", len(migration.Table))
 
 	// completed, commit hash slot ring to zookeeper
 	newSlot := common.NewHashSlotRing()
@@ -175,7 +174,7 @@ func (m *Server) syncMigration(migration *common.Migration) (*common.Distributed
 func (m *Server) GetWorkerByKey(_ context.Context, key *pb.Key) (*pb.GetWorkerResponse, error) {
 	m.rwLock.RLock()
 	defer m.rwLock.RUnlock()
-	id := m.slots.GetWorkerId(key.Key)
+	id := m.slots.GetWorkerIdByKey(key.Key)
 	if id == 0 {
 		return &pb.GetWorkerResponse{
 			Status: pb.Status_ENOSERVER,
@@ -204,32 +203,7 @@ func (m *Server) RegisterToZk(conn *zk.Conn) error {
 	log := common.Log()
 	m.conn = conn
 
-	// register itself
-	nodePath := path.Join(common.ZK_MASTER_ROOT, common.ZK_MASTER_NAME)
-	data := common.NewMasterNode(m.Hostname, m.Port)
-	b, err := json.Marshal(data)
-	if err != nil {
-		log.Panic("Failed to marshall into json object.", zap.Error(err))
-	}
-	n, err := conn.Create(nodePath, b, zk.FlagSequence|zk.FlagEphemeral, zk.WorldACL(zk.PermAll))
-	if err != nil {
-		log.Panic("Failed to register itself to zookeeper.", zap.Error(err))
-	}
-	name := path.Base(n)
-	// now make sure that we are the lock holder
-	for {
-		children, _, eventChan, err := m.conn.ChildrenW(common.ZK_MASTER_ROOT)
-		if err != nil {
-			log.Panic("Failed to get all lock holders.")
-		}
-		sort.Strings(children)
-		if children[0] == name {
-			// lock holder is me!
-			break
-		}
-		_ = <-eventChan
-	}
-	// ensure all paths exist
+	// ensure that all paths exist
 	if err := common.EnsurePathRecursive(conn, common.ZK_WORKERS_ROOT); err != nil {
 		return err
 	}
@@ -242,12 +216,35 @@ func (m *Server) RegisterToZk(conn *zk.Conn) error {
 	if err := common.EnsurePath(conn, common.ZK_ELECTION_ROOT); err != nil {
 		return err
 	}
+
+	// register itself
+	nodePath := path.Join(common.ZK_MASTER_ROOT, common.ZK_MASTER_NAME)
+	data := common.NewMasterNode(m.Hostname, m.Port)
+	n, err := common.ZkCreate(m.conn, nodePath, data, true, true)
+	if err != nil {
+		log.Panic("Failed to register myself to zookeeper.", zap.Error(err))
+	}
+	name := path.Base(n)
+
+	// wait on lock until we have it
+	for {
+		children, _, eventChan, err := m.conn.ChildrenW(common.ZK_MASTER_ROOT)
+		if err != nil {
+			log.Panic("Failed to get all lock holders.")
+		}
+		sort.Strings(children)
+		if children[0] == name {
+			// lock holder is me!
+			break
+		}
+		_ = <-eventChan
+	}
 	// initialize version id & worker id
 	versionId := common.DistributedAtomicInteger{
 		Conn: conn,
 		Path: path.Join(common.ZK_ROOT, common.ZK_VERSION_NAME),
 	}
-	err := versionId.SetDefault(0)
+	err = versionId.SetDefault(0)
 	if err != nil {
 		return err
 	}

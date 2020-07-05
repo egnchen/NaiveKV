@@ -2,6 +2,7 @@
 
 FROM openjdk:11-jre-slim
 
+# necessary environment variables
 ENV ZOO_CONF_DIR=/conf \
     ZOO_DATA_DIR=/data \
     ZOO_DATA_LOG_DIR=/datalog \
@@ -23,16 +24,9 @@ RUN set -eux; \
     chown zookeeper:zookeeper "$ZOO_DATA_LOG_DIR" "$ZOO_DATA_DIR" "$ZOO_CONF_DIR" "$ZOO_LOG_DIR"
 
 # Install required packges
-RUN set -eux; \
-    apt-get update; \
-    DEBIAN_FRONTEND=noninteractive \
-    apt-get install -y --no-install-recommends \
-        ca-certificates \
-        dirmngr \
-        gosu \
-        gnupg \
-        netcat \
-        wget; \
+RUN set -eux; apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates dirmngr gosu gnupg netcat wget; \
     rm -rf /var/lib/apt/lists/*; \
 # Verify that gosu binary works
     gosu nobody true

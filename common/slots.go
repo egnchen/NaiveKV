@@ -1,23 +1,28 @@
-// slot definitions
+// Slot definitions
+// This file contains various data structures for hash slot.
+
 package common
 
 import (
 	"hash/crc32"
 )
 
-const DEFAULT_SLOT_COUNT = 1024
+type SlotId uint16
 
+const DEFAULT_SLOT_COUNT = SlotId(1024)
+
+// An array of worker IDs, indicating the worker each slot belongs to
 type HashSlotRing []WorkerId
 
 func NewHashSlotRing() HashSlotRing {
-	return make([]WorkerId, DEFAULT_SLOT_COUNT)
+	return make(HashSlotRing, DEFAULT_SLOT_COUNT)
 }
 
-func (ring HashSlotRing) GetWorkerId(key string) WorkerId {
+func (ring HashSlotRing) GetWorkerIdByKey(key string) WorkerId {
 	return ring[ring.GetSlotId(key)]
 }
 
-func (ring HashSlotRing) GetWorkerIdDirect(id SlotId) WorkerId {
+func (ring HashSlotRing) GetWorkerIdBySlot(id SlotId) WorkerId {
 	return ring[id]
 }
 
@@ -30,18 +35,18 @@ func (ring HashSlotRing) GetSlotId(key string) SlotId {
 	return GetSlotId(key, len(ring))
 }
 
+// Slot migration data structures
+
+// A map from slot ID to destination worker ID.
 type MigrationTable map[SlotId]WorkerId
+
+// Overall migration plan, containing each to-be-migrated slots' destination/
 type Migration struct {
 	Version uint32
 	Table   MigrationTable
 }
 
-// An allocator handles slot migration. Given a set of new workers,
-// it should be able to yield a valid migration table.
-type HashSlotAllocator interface {
-	AllocateSlots(ring *HashSlotRing, oldWorkers map[WorkerId]*Worker, newWorker *Worker) (MigrationTable, error)
-}
-
+// Migration plan specific to one worker.
 type SingleNodeMigration struct {
 	Version uint32
 	Id      WorkerId
@@ -49,21 +54,22 @@ type SingleNodeMigration struct {
 	Len     int
 }
 
-func (r SingleNodeMigration) GetDestId(key string) WorkerId {
+func (r SingleNodeMigration) GetDestWorkerId(key string) WorkerId {
 	slot := GetSlotId(key, r.Len)
 	ret, ok := r.Table[slot]
 	if ok {
 		return ret
 	} else {
-		return r.Id
+		return r.Id // does not need to be migrated
 	}
 }
 
+// Generate `id`'s specific migration plan according to the overall plan
 func NewSingleNodeMigration(id WorkerId, original *HashSlotRing, migration *Migration) *SingleNodeMigration {
 	table := make(MigrationTable)
 	stat := make(map[WorkerId]int)
 	for slotId, dstId := range migration.Table {
-		srcId := original.GetWorkerIdDirect(slotId)
+		srcId := original.GetWorkerIdBySlot(slotId)
 		if srcId == id {
 			table[slotId] = dstId
 			stat[dstId] += 1
@@ -78,19 +84,22 @@ func NewSingleNodeMigration(id WorkerId, original *HashSlotRing, migration *Migr
 	}
 }
 
-// separate an overall migration plan to small plans specific to different nodes
+// Separate an overall migration plan to small plans specific to different workers.
 func (m *Migration) Separate(original *HashSlotRing) map[WorkerId]*SingleNodeMigration {
 	// stat how many workers in the original hash ring
 	ret := make(map[WorkerId]*SingleNodeMigration)
-	for slotId, _ := range m.Table {
-		srcId := original.GetWorkerIdDirect(slotId)
+	for slotId := range m.Table {
+		srcId := original.GetWorkerIdBySlot(slotId)
 		if srcId == 0 {
 			continue
 		}
-		ret[srcId] = nil
-	}
-	for i := range ret {
-		ret[i] = NewSingleNodeMigration(i, original, m)
+		ret[srcId] = NewSingleNodeMigration(srcId, original, m)
 	}
 	return ret
+}
+
+// Hash slot allocator's interface. A hash slot allocator should yield a migration plan
+// according to the given original slot ring and the new worker to add into.
+type HashSlotAllocator interface {
+	AllocateSlots(ring *HashSlotRing, oldWorkers map[WorkerId]*Worker, newWorker *Worker) (MigrationTable, error)
 }

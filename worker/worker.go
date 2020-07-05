@@ -1,6 +1,6 @@
 package worker
 
-// worker worker control plane
+// primary/backup control plane
 
 import (
 	"context"
@@ -405,7 +405,7 @@ func (s *WorkerServer) RegisterToZk(conn *zk.Conn, weight float32) error {
 	}
 	if !exists {
 		if s.mode == MODE_BACKUP {
-			return errors.New("worker does not exist in zookeeper yet.")
+			return errors.New("worker does not exist in zookeeper yet")
 		}
 		// apparently it is a new worker, add all of them atomically
 		ops = append(ops, &zk.CreateRequest{
@@ -813,7 +813,7 @@ func (s *WorkerServer) doMigration() error {
 			client := pb.NewKVBackupClient(conn)
 			// mask
 			mask := func(key string) bool {
-				return migration.GetDestId(key) == dst
+				return migration.GetDestWorkerId(key) == dst
 			}
 			// register replication strategy
 			routine := SyncRoutine{
