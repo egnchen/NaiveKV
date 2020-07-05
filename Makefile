@@ -1,10 +1,18 @@
 # some debug & running shorthands
 .PHONY: master primary backup client
-.PHONY: zookeeper zk-cli
+.PHONY: zookeeper zookeeper-create-network zk-cli
 .PHONY: kill-port
 
+zookeeper-create-network:
+	docker network create zk
+
 zookeeper:
-	docker run --name kv-zookeeper --restart always -d -p 2181:2181 eyek/kv-zookeeper:1.0
+	docker run --name zk1 --restart always -d -v $(shell pwd)/deploy/zookeeper/zoo1.cfg:/conf/zoo.cfg -e "ZOO_MY_ID=1" -p 2181:2181 --net zk eyek/kv-zookeeper:1.0
+	docker run --name zk2 --restart always -d -v $(shell pwd)/deploy/zookeeper/zoo2.cfg:/conf/zoo.cfg -e "ZOO_MY_ID=2" -p 2182:2181 --net zk eyek/kv-zookeeper:1.0
+	docker run --name zk3 --restart always -d -v $(shell pwd)/deploy/zookeeper/zoo3.cfg:/conf/zoo.cfg -e "ZOO_MY_ID=3" -p 2183:2181 --net zk eyek/kv-zookeeper:1.0
+
+zk-cli:
+	docker run -it --rm --link zk1:zookeeper --net zk eyek/kv-zookeeper:1.0 zkCli.sh -server zookeeper
 
 master:
 	go run cmd/master/main.go
@@ -18,8 +26,6 @@ backup:
 client:
 	go run cmd/client/main.go
 
-zk-cli:
-	docker run -it --rm --link kv-zookeeper:zookeeper eyek/kv-zookeeper:1.0 zkCli.sh -server zookeeper
 
 kill-port:
 	sudo kill -9 $(shell lsof -t -i:${port})

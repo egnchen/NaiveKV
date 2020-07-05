@@ -14,8 +14,9 @@ const DEFAULT_SLOT_COUNT = SlotId(1024)
 // An array of worker IDs, indicating the worker each slot belongs to
 type HashSlotRing []WorkerId
 
-func NewHashSlotRing() HashSlotRing {
-	return make(HashSlotRing, DEFAULT_SLOT_COUNT)
+func NewHashSlotRing() *HashSlotRing {
+	ret := make(HashSlotRing, DEFAULT_SLOT_COUNT)
+	return &ret
 }
 
 func (ring HashSlotRing) GetWorkerIdByKey(key string) WorkerId {
@@ -64,6 +65,18 @@ func (r SingleNodeMigration) GetDestWorkerId(key string) WorkerId {
 	}
 }
 
+func (m SingleNodeMigration) GetDestinations() []WorkerId {
+	workers := make(map[WorkerId]bool)
+	for _, dst := range m.Table {
+		workers[dst] = true
+	}
+	ret := make([]WorkerId, 0, len(workers))
+	for dst, _ := range workers {
+		ret = append(ret, dst)
+	}
+	return ret
+}
+
 // Generate `id`'s specific migration plan according to the overall plan
 func NewSingleNodeMigration(id WorkerId, original *HashSlotRing, migration *Migration) *SingleNodeMigration {
 	table := make(MigrationTable)
@@ -85,7 +98,7 @@ func NewSingleNodeMigration(id WorkerId, original *HashSlotRing, migration *Migr
 }
 
 // Separate an overall migration plan to small plans specific to different workers.
-func (m *Migration) Separate(original *HashSlotRing) map[WorkerId]*SingleNodeMigration {
+func (m Migration) Separate(original *HashSlotRing) map[WorkerId]*SingleNodeMigration {
 	// stat how many workers in the original hash ring
 	ret := make(map[WorkerId]*SingleNodeMigration)
 	for slotId := range m.Table {
@@ -93,9 +106,29 @@ func (m *Migration) Separate(original *HashSlotRing) map[WorkerId]*SingleNodeMig
 		if srcId == 0 {
 			continue
 		}
-		ret[srcId] = NewSingleNodeMigration(srcId, original, m)
+		ret[srcId] = NewSingleNodeMigration(srcId, original, &m)
 	}
 	return ret
+}
+
+func (m Migration) GetDestinations() []WorkerId {
+	workers := make(map[WorkerId]bool)
+	for _, dst := range m.Table {
+		workers[dst] = true
+	}
+	ret := make([]WorkerId, 0, len(workers))
+	for dst, _ := range workers {
+		ret = append(ret, dst)
+	}
+	return ret
+}
+
+func (m Migration) Migrate(original *HashSlotRing) *HashSlotRing {
+	ret := make(HashSlotRing, len(*original))
+	for slot, dst := range m.Table {
+		ret[slot] = dst
+	}
+	return &ret
 }
 
 // Hash slot allocator's interface. A hash slot allocator should yield a migration plan

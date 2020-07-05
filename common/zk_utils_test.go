@@ -57,6 +57,13 @@ func TestZkCreate(t *testing.T) {
 	err = common.ZkGet(conn, "/test/test_dat", &ret)
 	assert.Nil(t, err)
 	assert.Equal(t, dat, ret)
+
+	// test if it can correctly unmarshal a pointer
+	_, err = common.ZkCreate(conn, "/test/test_dat_2", &dat, false, false)
+	assert.Nil(t, err)
+	err = common.ZkGet(conn, "/test/test_dat_2", &ret)
+	assert.Nil(t, err)
+	assert.Equal(t, dat, ret)
 	name, err := common.ZkCreate(conn, "/test/test_es_", "asdf", true, true)
 	assert.Nil(t, err)
 	assert.NotEqual(t, "/test/test_es_", name)

@@ -206,7 +206,7 @@ func ZkMulti(conn *zk.Conn, reqs ...interface{}) ([]zk.MultiResponse, error) {
 		log.Error("Failed to update table & version number.", zap.Error(err))
 		for i, resp := range resps {
 			if resp.Error != nil {
-				log.Errorf("Request #%d(%v) failed: %+v", i, reqs[i], resp.Error)
+				log.Errorf("Request #%d(%+v) failed: %+v", i, reqs[i], resp.Error)
 				return resps, resp.Error
 			}
 		}

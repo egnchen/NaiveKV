@@ -15,7 +15,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"path"
 	"strings"
 	"syscall"
 )
@@ -86,7 +85,7 @@ func main() {
 		// get new id
 		i := common.DistributedAtomicInteger{
 			Conn: conn,
-			Path: path.Join(common.ZK_ROOT, common.ZK_WORKER_ID_NAME),
+			Path: common.ZK_WORKER_ID,
 		}
 		*id, err = i.Inc()
 		if err != nil {
@@ -116,8 +115,8 @@ func main() {
 	}
 
 	// start watching worker metadata changes, and do backup broadcasting
-	go workerServer.Watch(workerServer.WatchWorkerStopChan)
-	go workerServer.WatchMigration(workerServer.WatchMigrationStopChan)
+	go workerServer.Watch()
+	go workerServer.WatchMigration()
 	go workerServer.DoSync()
 
 	// open tcp socket

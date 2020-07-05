@@ -11,16 +11,16 @@ import (
 
 const (
 	ZK_ROOT                = "/kv"
+	ZK_MASTERS_ROOT        = "/kv/masters"
 	ZK_WORKERS_ROOT        = "/kv/workers"
 	ZK_MIGRATIONS_ROOT     = "/kv/migrations"
 	ZK_ELECTION_ROOT       = "/kv/election"
+	ZK_TABLE               = "/kv/table"
+	ZK_TABLE_VERSION       = "/kv/version"
+	ZK_WORKER_ID           = "/kv/workerId"
 	ZK_MASTER_NAME         = "master"
-	ZK_MASTER_ROOT         = "/kv/masters"
-	ZK_VERSION_NAME        = "version"
-	ZK_PRIMARY_WORKER_NAME = "worker"
+	ZK_PRIMARY_WORKER_NAME = "primary"
 	ZK_BACKUP_WORKER_NAME  = "backup"
-	ZK_WORKER_ID_NAME      = "workerId"
-	ZK_TABLE_NAME          = "table"
 	ZK_WORKER_CONFIG_NAME  = "config"
 	ZK_COMPLETE_SEM_NAME   = "completeSem"
 )
@@ -71,10 +71,9 @@ type Worker struct {
 	Weight  float32
 	Watcher <-chan zk.Event
 	// here worker & backup nodes are represented by corresponding znode names.
-	Primary     *WorkerNode
-	PrimaryName string
-	Backups     map[string]*WorkerNode
-	NumBackups  int
+	Primaries  map[string]*WorkerNode
+	Backups    map[string]*WorkerNode
+	NumBackups int
 }
 
 type WorkerConfig struct {
@@ -83,16 +82,18 @@ type WorkerConfig struct {
 }
 
 // get a worker instance from zookeeper
-func GetWorker(conn *zk.Conn, id WorkerId) (Worker, error) {
+func GetAndWatchWorker(conn *zk.Conn, id WorkerId) (Worker, error) {
 	p := path.Join(ZK_WORKERS_ROOT, strconv.Itoa(int(id)))
 	children, _, eventChan, err := conn.ChildrenW(p)
 	if err != nil {
 		return Worker{}, err
 	}
-	var worker Worker
-	worker.Id = id
-	worker.Watcher = eventChan
-	worker.Backups = make(map[string]*WorkerNode)
+	worker := Worker{
+		Id:         id,
+		Watcher:    eventChan,
+		Primaries:  make(map[string]*WorkerNode),
+		Backups:	make(map[string]*WorkerNode),
+	}
 	for _, c := range children {
 		if strings.Contains(c, ZK_PRIMARY_WORKER_NAME) || strings.Contains(c, ZK_BACKUP_WORKER_NAME) {
 			// worker node
@@ -101,8 +102,7 @@ func GetWorker(conn *zk.Conn, id WorkerId) (Worker, error) {
 				return Worker{}, err
 			}
 			if strings.Contains(c, ZK_PRIMARY_WORKER_NAME) {
-				worker.PrimaryName = c
-				worker.Primary = &node
+				worker.Primaries[c] = &node
 			} else {
 				worker.Backups[c] = &node
 			}
@@ -117,5 +117,5 @@ func GetWorker(conn *zk.Conn, id WorkerId) (Worker, error) {
 			Log().Warn("Cannot determine node, skipping", zap.String("name", c))
 		}
 	}
-	return worker, nil
+	return worker, err
 }

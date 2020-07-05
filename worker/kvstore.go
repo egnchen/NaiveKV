@@ -39,6 +39,7 @@ type KVStore interface {
 	Get(key string, transactionId int) (value string, err error)
 	Put(key string, value string, transactionId int) (version uint64, err error)
 	Delete(key string, transactionId int) (version uint64, err error)
+	// transactional APIs
 	StartTransaction() (transactionId int, err error)
 	Rollback(transactionId int) error
 	Commit(transactionId int) error
@@ -96,7 +97,7 @@ func (kv *SimpleKV) getTransaction(transactionId int) *TransactionStruct {
 }
 
 func (kv *SimpleKV) Get(key string, transactionId int) (string, error) {
-	common.SugaredLog().Infof("SIMPLEKV GET %s %d", key, transactionId)
+	common.SugaredLog().Debugf("SIMPLKV GET %s %d", key, transactionId)
 	// get does not require logging
 	// lookup layer by layer
 	t := kv.getTransaction(transactionId)
@@ -137,7 +138,7 @@ func (kv *SimpleKV) Get(key string, transactionId int) (string, error) {
 }
 
 func (kv *SimpleKV) Put(key string, value string, transactionId int) (uint64, error) {
-	common.SugaredLog().Infof("SIMPLEKV PUT %s %s %d", key, value, transactionId)
+	common.SugaredLog().Debugf("KV PUT %s %s %d", key, value, transactionId)
 	t := kv.getTransaction(transactionId)
 	if t == nil {
 		return 0, EINVTRANS
@@ -159,7 +160,7 @@ func (kv *SimpleKV) Put(key string, value string, transactionId int) (uint64, er
 // Make sure that key is removed from KVStore, regardless of whether it exists beforehand or not.
 // You should check if the key exists in the KV beforehand, otherwise this API could thrash the KV.
 func (kv *SimpleKV) Delete(key string, transactionId int) (uint64, error) {
-	common.SugaredLog().Infof("SIMPLEKV DELETE %s %d", key, transactionId)
+	common.SugaredLog().Debugf("KV DELETE %s %d", key, transactionId)
 	t := kv.getTransaction(transactionId)
 	if t == nil {
 		return 0, EINVTRANS
@@ -184,7 +185,7 @@ func (kv *SimpleKV) StartTransaction() (transactionId int, err error) {
 	defer kv.tLock.Unlock()
 	for i, u := range kv.transactions {
 		if u == nil {
-			common.SugaredLog().Infof("SIMPLEKV START %d", i)
+			common.SugaredLog().Debugf("KV START %d", i)
 			kv.writeLog("start", strconv.FormatInt(int64(i), 16))
 			kv.transactions[i] = &TransactionStruct{
 				Lock:  sync.RWMutex{},
@@ -203,7 +204,7 @@ func (kv *SimpleKV) Rollback(transactionId int) error {
 	kv.tLock.Lock()
 	defer kv.tLock.Unlock()
 	if kv.transactions[transactionId] != nil {
-		common.SugaredLog().Infof("SIMPLEKV ROLLBACK %d", transactionId)
+		common.SugaredLog().Debugf("KV ROLLBACK %d", transactionId)
 		kv.writeLog("rollback", strconv.FormatInt(int64(transactionId), 16))
 		kv.transactions[transactionId] = nil
 		return nil
@@ -214,7 +215,7 @@ func (kv *SimpleKV) Rollback(transactionId int) error {
 
 // transaction zero can also be committed, but committing zero does not perform any operation
 func (kv *SimpleKV) Commit(transactionId int) error {
-	common.SugaredLog().Infof("SIMPLEKV COMMIT %d", transactionId)
+	common.SugaredLog().Debugf("KV COMMIT %d", transactionId)
 	if transactionId < 0 || transactionId >= TRANSACTION_COUNT {
 		return EINVTRANS
 	}
@@ -260,7 +261,7 @@ func (kv *SimpleKV) Checkpoint() error {
 
 	// only one checkpoint operation can happen at a time
 	kv.checkpointLock.Lock()
-	common.SugaredLog().Infof("SIMPLEKV CKPT")
+	common.SugaredLog().Debugf("KV CKPT")
 	defer kv.checkpointLock.Unlock()
 	// calculate new base
 	b := make(map[string]ValueWithVersion)
@@ -325,7 +326,7 @@ func (kv *SimpleKV) writeLog(op string, args ...string) {
 
 // flush log
 func (kv *SimpleKV) Flush() {
-	common.SugaredLog().Infof("SIMPLEKV FLUSHING")
+	common.SugaredLog().Debugf("KV FLUSHING")
 	if err := kv.logFile.Sync(); err != nil {
 		common.Log().Error("Failed to flush log.", zap.Error(err))
 	}

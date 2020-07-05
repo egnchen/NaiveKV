@@ -128,7 +128,7 @@ func init() {
 }
 
 var fileDescriptor_f9c348dec43a6705 = []byte{
-	// 203 bytes of a gzipped FileDescriptorProto
+	// 221 bytes of a gzipped FileDescriptorProto
 	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xe2, 0xe2, 0xc9, 0x4d, 0x2c, 0x2e,
 	0x49, 0x2d, 0xd2, 0x2b, 0x28, 0xca, 0x2f, 0xc9, 0x17, 0xe2, 0xc8, 0x2e, 0x83, 0xb0, 0xa4, 0x78,
 	0x92, 0xf3, 0x73, 0x73, 0xf3, 0xf3, 0x20, 0x3c, 0xa5, 0x74, 0x2e, 0x41, 0xf7, 0xd4, 0x92, 0xf0,
@@ -138,10 +138,11 @@ var fileDescriptor_f9c348dec43a6705 = []byte{
 	0x81, 0x51, 0x83, 0x1b, 0x59, 0x25, 0xd4, 0x4c, 0xa8, 0xbc, 0x92, 0x05, 0x17, 0x1b, 0x44, 0x44,
 	0x48, 0x8a, 0x8b, 0x23, 0x23, 0xbf, 0xb8, 0x24, 0x2f, 0x31, 0x37, 0x15, 0x6c, 0x3e, 0x67, 0x10,
 	0x9c, 0x2f, 0x24, 0xc4, 0xc5, 0x52, 0x90, 0x5f, 0x54, 0x02, 0x36, 0x8d, 0x35, 0x08, 0xcc, 0x36,
-	0xf2, 0xe2, 0xe2, 0xf0, 0x0e, 0xf3, 0x05, 0x7b, 0x46, 0xc8, 0x8e, 0x8b, 0x0f, 0xee, 0x5c, 0xa7,
-	0x4a, 0xef, 0xd4, 0x4a, 0x21, 0x5e, 0x84, 0x8d, 0xde, 0xa9, 0x95, 0x52, 0xd2, 0x08, 0x2e, 0x86,
-	0xbf, 0x94, 0x18, 0x9c, 0xd8, 0xa3, 0x58, 0xc1, 0x92, 0x49, 0x6c, 0x60, 0xca, 0x18, 0x10, 0x00,
-	0x00, 0xff, 0xff, 0x84, 0xf7, 0x31, 0xc1, 0x26, 0x01, 0x00, 0x00,
+	0xea, 0x63, 0xe4, 0xe2, 0xf0, 0x0e, 0xf3, 0x05, 0xfb, 0x46, 0xc8, 0x89, 0x8b, 0x17, 0xee, 0x5e,
+	0xa7, 0x4a, 0xcf, 0x14, 0x21, 0x21, 0x74, 0x1b, 0x3d, 0x53, 0xa4, 0xa4, 0x11, 0x62, 0x18, 0x9e,
+	0x53, 0x62, 0x10, 0xb2, 0xe3, 0xe2, 0x43, 0x32, 0xc3, 0x3b, 0xb5, 0x52, 0x88, 0x17, 0xa1, 0xc1,
+	0x3b, 0xb5, 0x92, 0x80, 0x7e, 0x27, 0xf6, 0x28, 0x56, 0xb0, 0x64, 0x12, 0x1b, 0x98, 0x32, 0x06,
+	0x04, 0x00, 0x00, 0xff, 0xff, 0x02, 0x61, 0x13, 0x95, 0x6b, 0x01, 0x00, 0x00,
 }
 
 // Reference imports to suppress errors if they are not otherwise used.
@@ -156,6 +157,7 @@ const _ = grpc.SupportPackageIsVersion6
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://godoc.org/google.golang.org/grpc#ClientConn.NewStream.
 type KVMasterClient interface {
+	GetWorkerById(ctx context.Context, in *WorkerId, opts ...grpc.CallOption) (*GetWorkerResponse, error)
 	GetWorkerByKey(ctx context.Context, in *Key, opts ...grpc.CallOption) (*GetWorkerResponse, error)
 }
 
@@ -165,6 +167,15 @@ type kVMasterClient struct {
 
 func NewKVMasterClient(cc grpc.ClientConnInterface) KVMasterClient {
 	return &kVMasterClient{cc}
+}
+
+func (c *kVMasterClient) GetWorkerById(ctx context.Context, in *WorkerId, opts ...grpc.CallOption) (*GetWorkerResponse, error) {
+	out := new(GetWorkerResponse)
+	err := c.cc.Invoke(ctx, "/kv.proto.KVMaster/GetWorkerById", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *kVMasterClient) GetWorkerByKey(ctx context.Context, in *Key, opts ...grpc.CallOption) (*GetWorkerResponse, error) {
@@ -178,6 +189,7 @@ func (c *kVMasterClient) GetWorkerByKey(ctx context.Context, in *Key, opts ...gr
 
 // KVMasterServer is the server API for KVMaster service.
 type KVMasterServer interface {
+	GetWorkerById(context.Context, *WorkerId) (*GetWorkerResponse, error)
 	GetWorkerByKey(context.Context, *Key) (*GetWorkerResponse, error)
 }
 
@@ -185,12 +197,33 @@ type KVMasterServer interface {
 type UnimplementedKVMasterServer struct {
 }
 
+func (*UnimplementedKVMasterServer) GetWorkerById(ctx context.Context, req *WorkerId) (*GetWorkerResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetWorkerById not implemented")
+}
 func (*UnimplementedKVMasterServer) GetWorkerByKey(ctx context.Context, req *Key) (*GetWorkerResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetWorkerByKey not implemented")
 }
 
 func RegisterKVMasterServer(s *grpc.Server, srv KVMasterServer) {
 	s.RegisterService(&_KVMaster_serviceDesc, srv)
+}
+
+func _KVMaster_GetWorkerById_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WorkerId)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KVMasterServer).GetWorkerById(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/kv.proto.KVMaster/GetWorkerById",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KVMasterServer).GetWorkerById(ctx, req.(*WorkerId))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _KVMaster_GetWorkerByKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -215,6 +248,10 @@ var _KVMaster_serviceDesc = grpc.ServiceDesc{
 	ServiceName: "kv.proto.KVMaster",
 	HandlerType: (*KVMasterServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "GetWorkerById",
+			Handler:    _KVMaster_GetWorkerById_Handler,
+		},
 		{
 			MethodName: "GetWorkerByKey",
 			Handler:    _KVMaster_GetWorkerByKey_Handler,

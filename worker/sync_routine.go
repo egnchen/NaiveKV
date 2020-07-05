@@ -78,6 +78,7 @@ func (s *SyncRoutine) Prepare(content map[string]ValueWithVersion) error {
 	}
 }
 
+// do lossless sync transfer
 func (s *SyncRoutine) Sync() {
 	log := common.Log()
 	// start gRPC bi-directional stream
@@ -98,7 +99,7 @@ func (s *SyncRoutine) Sync() {
 			default:
 				reply, err := stream.Recv()
 				if err != nil {
-					log.Error("Failed to retrieve reply.", zap.Error(err))
+					log.Warn("Failed to retrieve reply.", zap.Error(err))
 					break recvLoop
 				}
 				s.Condition.L.Lock()

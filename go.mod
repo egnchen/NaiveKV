@@ -9,5 +9,6 @@ require (
 	github.com/stretchr/testify v1.4.0
 	go.uber.org/atomic v1.6.0
 	go.uber.org/zap v1.15.0
+	google.golang.org/genproto v0.0.0-20190819201941-24fa4b261c55
 	google.golang.org/grpc v1.29.1
 )

@@ -24,9 +24,9 @@ type Server struct {
 	version       uint32
 	versionId     common.DistributedAtomicInteger
 	migrationLock sync.Mutex
-	slots         common.HashSlotRing
-	allocator     common.HashSlotAllocator
 	rwLock        sync.RWMutex
+	slots         *common.HashSlotRing
+	allocator     common.HashSlotAllocator
 	rootWatch     <-chan zk.Event
 	workers       map[common.WorkerId]*common.Worker
 }
@@ -53,60 +53,31 @@ func (m *Server) doMigration(newWorkers map[common.WorkerId]*common.Worker) {
 	if err != nil {
 		log.Error("Failed to allocate slots.", zap.Error(err))
 	}
+	log.Infof("Doing migration version %d...", migration.Version)
+
 	completeSem, err := m.syncMigration(migration)
 	if err != nil {
 		log.Error("Failed to sync migration information to zookeeper.", zap.Error(err))
 	}
 	log.Infof("Migration plan version %d successfully uploaded.", migration.Version)
+
 	if err := completeSem.Watch(func(newValue int) bool { return newValue > 0 }); err != nil {
 		log.Error("Failed to watch semaphore.", zap.Error(err))
 	}
 	log.Infof("Successfully migrated %d slots.", len(migration.Table))
 
-	// completed, commit hash slot ring to zookeeper
-	newSlot := common.NewHashSlotRing()
-	copy(newSlot, m.slots)
-	for slot, dstId := range migration.Table {
-		newSlot[slot] = dstId
-	}
+	// commit hash slot ring to zookeeper
+	newSlot := migration.Migrate(m.slots)
 	bin, _ := json.Marshal(newSlot)
-	if _, err := m.conn.Multi(
-		&zk.SetDataRequest{
-			Path:    path.Join(common.ZK_ROOT, common.ZK_VERSION_NAME),
-			Data:    []byte(strconv.Itoa(int(migration.Version + 1))),
-			Version: -1,
-		},
-		&zk.SetDataRequest{
-			Path:    path.Join(common.ZK_ROOT, common.ZK_TABLE_NAME),
-			Data:    bin,
-			Version: -1,
-		}); err != nil {
-		log.Error("Failed to commit change to migration.", zap.Error(err))
+	newVersion := []byte(strconv.Itoa(int(migration.Version+1)))
+	if _, err := common.ZkMulti(m.conn, &zk.SetDataRequest{Path: common.ZK_TABLE_VERSION, Data: newVersion, Version: -1},
+		&zk.SetDataRequest{Path: common.ZK_TABLE, Data: bin, Version: -1}); err != nil {
+		log.Error("Failed to upload new slots to zookeeper.", zap.Error(err))
 	}
-	log.Infof("Migration reached commit point.")
+	log.Infof("Migration committed.")
 	// COMMIT POINT
-	bin, err = json.Marshal(newSlot)
-	if err != nil {
-		return
-	}
-	resps, err := m.conn.Multi(&zk.SetDataRequest{
-		Path:    path.Join(common.ZK_ROOT, common.ZK_VERSION_NAME),
-		Data:    []byte(strconv.Itoa(int(m.version + 1))),
-		Version: -1,
-	}, &zk.SetDataRequest{
-		Path:    path.Join(common.ZK_ROOT, common.ZK_TABLE_NAME),
-		Data:    bin,
-		Version: -1,
-	})
-	if err != nil {
-		log.Error("Failed to update table & version number.", zap.Error(err))
-		for _, resp := range resps {
-			if resp.Error != nil {
-				log.Error("Error:", zap.Error(err))
-			}
-		}
-	}
-	// update local migration
+
+	// update local copy of migration
 	m.rwLock.Lock()
 	m.slots = newSlot
 	m.version += 1
@@ -115,25 +86,27 @@ func (m *Server) doMigration(newWorkers map[common.WorkerId]*common.Worker) {
 		m.workers[k] = v
 	}
 	m.rwLock.Unlock()
+
 	// print statistics
 	stat := make(map[common.WorkerId]int)
-	for _, id := range m.slots {
+	for _, id := range *m.slots {
 		stat[id] += 1
 	}
 	log.Infof("Distribution for now: %v", stat)
 }
 
-// upload migration information to zookeeper
-// contains individual migration plan and a semaphore with value set
+// Upload migration plan to zookeeper.
+// One migration plan contains migration information for each individual clients & a complete semaphore.
 func (m *Server) syncMigration(migration *common.Migration) (*common.DistributedAtomicInteger, error) {
 	log := common.SugaredLog()
 	if migration.Version != m.version {
 		return nil, errors.New("migration version mismatch")
 	}
 	p := path.Join(common.ZK_MIGRATIONS_ROOT, strconv.Itoa(int(migration.Version)))
+
 	var ops []interface{}
 	ops = append(ops, &zk.CreateRequest{Path: p, Data: []byte(""), Acl: zk.WorldACL(zk.PermAll), Flags: 0})
-	separatedTable := migration.Separate(&m.slots)
+	separatedTable := migration.Separate(m.slots)
 	for srcId, table := range separatedTable {
 		bin, err := json.Marshal(table)
 		if err != nil {
@@ -146,23 +119,21 @@ func (m *Server) syncMigration(migration *common.Migration) (*common.Distributed
 			Flags: 0,
 		})
 	}
-	// create a semaphore, wait for all workers to complete
+	// and add the semaphore
 	ops = append(ops, &zk.CreateRequest{
 		Path:  path.Join(p, common.ZK_COMPLETE_SEM_NAME),
 		Data:  []byte(strconv.Itoa(len(separatedTable))),
 		Acl:   zk.WorldACL(zk.PermAll),
 		Flags: 0,
 	})
+
 	log.Info("Uploading migration plan...")
-	resps, err := m.conn.Multi(ops...)
+	_, err := common.ZkMulti(m.conn, ops...)
 	if err != nil {
 		log.Error("Error occurred while uploading migration plan.", zap.Error(err))
-		for _, r := range resps {
-			if r.Error != nil {
-				return nil, r.Error
-			}
-		}
 	}
+	log.Infof("Successfully uploaded migration plan version %d.", migration.Version)
+
 	completeSem := common.DistributedAtomicInteger{
 		Conn: m.conn,
 		Path: path.Join(p, common.ZK_COMPLETE_SEM_NAME),
@@ -182,12 +153,16 @@ func (m *Server) GetWorkerByKey(_ context.Context, key *pb.Key) (*pb.GetWorkerRe
 		}, nil
 	}
 	worker := m.workers[id]
-	if worker.Primary != nil {
+	if len(worker.Primaries) == 1 {
+		var workerNode *common.WorkerNode
+		for _, v := range worker.Primaries {
+			workerNode = v
+		}
 		return &pb.GetWorkerResponse{
 			Status: pb.Status_OK,
 			Worker: &pb.Worker{
-				Hostname: worker.Primary.Host.Hostname,
-				Port:     int32(worker.Primary.Host.Port),
+				Hostname: workerNode.Host.Hostname,
+				Port:     int32(workerNode.Host.Port),
 			},
 		}, nil
 	} else {
@@ -198,7 +173,6 @@ func (m *Server) GetWorkerByKey(_ context.Context, key *pb.Key) (*pb.GetWorkerRe
 	}
 }
 
-// TODO Handle master single-point failure recovery, like /kv/worker directory
 func (m *Server) RegisterToZk(conn *zk.Conn) error {
 	log := common.Log()
 	m.conn = conn
@@ -210,7 +184,7 @@ func (m *Server) RegisterToZk(conn *zk.Conn) error {
 	if err := common.EnsurePath(conn, common.ZK_MIGRATIONS_ROOT); err != nil {
 		return err
 	}
-	if err := common.EnsurePath(conn, common.ZK_MASTER_ROOT); err != nil {
+	if err := common.EnsurePath(conn, common.ZK_MASTERS_ROOT); err != nil {
 		return err
 	}
 	if err := common.EnsurePath(conn, common.ZK_ELECTION_ROOT); err != nil {
@@ -218,7 +192,7 @@ func (m *Server) RegisterToZk(conn *zk.Conn) error {
 	}
 
 	// register itself
-	nodePath := path.Join(common.ZK_MASTER_ROOT, common.ZK_MASTER_NAME)
+	nodePath := path.Join(common.ZK_MASTERS_ROOT, common.ZK_MASTER_NAME)
 	data := common.NewMasterNode(m.Hostname, m.Port)
 	n, err := common.ZkCreate(m.conn, nodePath, data, true, true)
 	if err != nil {
@@ -228,7 +202,7 @@ func (m *Server) RegisterToZk(conn *zk.Conn) error {
 
 	// wait on lock until we have it
 	for {
-		children, _, eventChan, err := m.conn.ChildrenW(common.ZK_MASTER_ROOT)
+		children, _, eventChan, err := m.conn.ChildrenW(common.ZK_MASTERS_ROOT)
 		if err != nil {
 			log.Panic("Failed to get all lock holders.")
 		}
@@ -239,11 +213,9 @@ func (m *Server) RegisterToZk(conn *zk.Conn) error {
 		}
 		_ = <-eventChan
 	}
+
 	// initialize version id & worker id
-	versionId := common.DistributedAtomicInteger{
-		Conn: conn,
-		Path: path.Join(common.ZK_ROOT, common.ZK_VERSION_NAME),
-	}
+	versionId := common.DistributedAtomicInteger{Conn: conn, Path: common.ZK_TABLE_VERSION}
 	err = versionId.SetDefault(0)
 	if err != nil {
 		return err
@@ -256,40 +228,29 @@ func (m *Server) RegisterToZk(conn *zk.Conn) error {
 	m.versionId = versionId
 	workerId := common.DistributedAtomicInteger{
 		Conn: conn,
-		Path: path.Join(common.ZK_ROOT, common.ZK_WORKER_ID_NAME),
+		Path: common.ZK_WORKER_ID,
 	}
 	if err := workerId.SetDefault(1); err != nil {
 		return err
 	}
-	// ensure table exists in zookeeper
-	exists, _, err := conn.Exists(path.Join(common.ZK_ROOT, common.ZK_TABLE_NAME))
+
+	// ensure that the migration table exists in zookeeper
+	exists, _, err := conn.Exists(common.ZK_TABLE)
 	if err != nil {
 		return err
 	}
 	if !exists {
-		// create one
 		ring := common.NewHashSlotRing()
-		bin, err := json.Marshal(ring)
-		if err != nil {
-			return err
-		}
-		_, err = conn.Create(path.Join(common.ZK_ROOT, common.ZK_TABLE_NAME), bin, 0, zk.WorldACL(zk.PermAll))
-		if err != nil {
+		if _, err := common.ZkCreate(m.conn, common.ZK_TABLE, ring, false, false); err != nil {
 			return err
 		}
 	} else {
 		// retrieve the latest ring from zookeeper
-		bin, _, err := conn.Get(path.Join(common.ZK_ROOT, common.ZK_TABLE_NAME))
-		if err != nil {
-			log.Error("Failed to get slot ring from zookeeper", zap.Error(err))
-			return err
-		}
 		var slot common.HashSlotRing
-		if err := json.Unmarshal(bin, &slot); err != nil {
-			log.Error("Failed to parse slot ring in zookeeper", zap.Error(err))
+		if err := common.ZkGet(m.conn, common.ZK_TABLE, &slot); err != nil {
 			return err
 		}
-		m.slots = slot
+		m.slots = &slot
 		log.Info("Fetched latest distribution from zookeeper.")
 	}
 
@@ -310,7 +271,7 @@ func (m *Server) updateAll() error {
 		if err != nil {
 			return err
 		}
-		worker, err := common.GetWorker(m.conn, common.WorkerId(id))
+		worker, err := common.GetAndWatchWorker(m.conn, common.WorkerId(id))
 		if err != nil {
 			return err
 		}
@@ -353,7 +314,7 @@ func (m *Server) Watch(stopChan <-chan struct{}) {
 			Chan: reflect.ValueOf(stopChan),
 		})
 		m.rwLock.RUnlock()
-		log.Sugar().Infof("Watching %+v\n", selectCases)
+		log.Sugar().Infof("Watching %d channels, %d workers...\n", len(selectCases), len(selectCases) - 2)
 		chosen, recv, recvOK := reflect.Select(selectCases)
 		if chosen == 0 {
 			if !recvOK {
@@ -374,7 +335,7 @@ func (m *Server) Watch(stopChan <-chan struct{}) {
 				id := common.WorkerId(value)
 				if _, ok := m.workers[id]; !ok {
 					// got a new worker
-					worker, err := common.GetWorker(m.conn, id)
+					worker, err := common.GetAndWatchWorker(m.conn, id)
 					if err != nil {
 						log.Error("Failed to retrieve newest node.", zap.Error(err))
 					}
@@ -401,7 +362,7 @@ func (m *Server) Watch(stopChan <-chan struct{}) {
 				_, name := path.Split(event.Path)
 				v, _ := strconv.Atoi(name) // IGNORED
 				id := common.WorkerId(v)
-				worker, err := common.GetWorker(m.conn, id)
+				worker, err := common.GetAndWatchWorker(m.conn, id)
 				if err != nil {
 					log.Error("Failed to retrieve node update.", zap.Error(err))
 				}
@@ -421,16 +382,16 @@ func (m *Server) calcMigration(newWorkers map[common.WorkerId]*common.Worker) (*
 	slog := common.SugaredLog()
 	slots := common.NewHashSlotRing()
 	finalTable := make(common.MigrationTable)
-	copy(slots, m.slots)
+	copy(*slots, *m.slots)
 	for _, nw := range newWorkers {
 		slog.Infof("Allocating slots for new worker %d", nw.Id)
-		table, err := m.allocator.AllocateSlots(&slots, m.workers, nw)
+		table, err := m.allocator.AllocateSlots(slots, m.workers, nw)
 		if err != nil {
 			return nil, err
 		}
 		// do modification on the local copy
 		for k, v := range table {
-			slots[k] = v
+			(*slots)[k] = v
 			finalTable[k] = v
 		}
 	}
