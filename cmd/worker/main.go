@@ -92,12 +92,6 @@ func main() {
 			log.Panic("Failed to get new worker id.", zap.Error(err))
 		}
 	}
-	// determine file path
-	if *mode == worker.MODE_PRIMARY {
-		*filePath = fmt.Sprintf("tmp/data%d", *id)
-	} else if *mode == worker.MODE_BACKUP {
-		*filePath = fmt.Sprintf("tmp/data-backup%d", *id)
-	}
 	var workerServer *worker.WorkerServer
 	if *mode == worker.MODE_PRIMARY {
 		workerServer, err = worker.NewPrimaryServer(*hostname, uint16(*port), *filePath, common.WorkerId(*id))

@@ -1,9 +1,10 @@
 package common
 
 import (
-	"fmt"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"sync"
+	"time"
 )
 
 var once sync.Once
@@ -15,15 +16,21 @@ func (_ *ZkLoggerAdapter) Printf(fmt string, args ...interface{}) {
 	SugaredLog().Infof("[ZooKeeper] "+fmt, args...)
 }
 
+func EmptyTimeEncoder(_ time.Time, _ zapcore.PrimitiveArrayEncoder) {
+	// do nothing
+}
+
 func Log() *zap.Logger {
 	once.Do(func() {
-		if logger == nil {
-			l, err := zap.NewDevelopment()
-			if err != nil {
-				panic(fmt.Sprintf("Failed to initialize logger: %v\n", err))
-			}
-			logger = l
+		loggerConfig := zap.NewDevelopmentConfig()
+		loggerConfig.EncoderConfig.EncodeTime = EmptyTimeEncoder
+		loggerConfig.EncoderConfig.EncodeCaller = nil
+		loggerConfig.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+		l, err := loggerConfig.Build()
+		if err != nil {
+			panic(err)
 		}
+		logger = l
 	})
 	return logger
 }

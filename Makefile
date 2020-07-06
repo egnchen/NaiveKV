@@ -17,11 +17,13 @@ zk-cli:
 master:
 	go run cmd/master/main.go
 
+weight ?= 10
+backupNum ?= 1
 primary:
-	go run cmd/primary/main.go -id ${id} -path tmp/data${id} -port $(shell expr ${id} + 7900)
+	go run cmd/worker/main.go -id ${id} -weight ${weight} -path tmp/data${id} -port $(shell expr ${id} + 7900)
 
 backup:
-	go run cmd/backup/main.go -id ${id} -path tmp/data_backup${id}
+	go run cmd/worker/main.go -mode backup -id ${id} -path tmp/backup${id}-${backupNum} -port $(shell expr 10 '*' ${id} + ${backupNum} + 7950)
 
 client:
 	go run cmd/client/main.go

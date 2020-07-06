@@ -49,6 +49,10 @@ type KVStore interface {
 	// Extract all values for keys that satisfies the divider function at the time this method is called.
 	// This method should not block. When doing calculation, the KVStore should continue to serve on other threads.
 	Extract(divider func(key string) bool, version uint64) map[string]ValueWithVersion
+	GetVersion() uint64
+	// A helper function to manually set current version
+	// helpful in bulk transfer scenarios where you have to keep version numbers sync
+	SetVersion(version uint64) error
 }
 
 type ValueWithVersion struct {
@@ -97,7 +101,7 @@ func (kv *SimpleKV) getTransaction(transactionId int) *TransactionStruct {
 }
 
 func (kv *SimpleKV) Get(key string, transactionId int) (string, error) {
-	common.SugaredLog().Debugf("SIMPLKV GET %s %d", key, transactionId)
+	common.SugaredLog().Debugf("SIMPLEKV GET %s %d", key, transactionId)
 	// get does not require logging
 	// lookup layer by layer
 	t := kv.getTransaction(transactionId)
@@ -138,7 +142,6 @@ func (kv *SimpleKV) Get(key string, transactionId int) (string, error) {
 }
 
 func (kv *SimpleKV) Put(key string, value string, transactionId int) (uint64, error) {
-	common.SugaredLog().Debugf("KV PUT %s %s %d", key, value, transactionId)
 	t := kv.getTransaction(transactionId)
 	if t == nil {
 		return 0, EINVTRANS
@@ -147,10 +150,12 @@ func (kv *SimpleKV) Put(key string, value string, transactionId int) (uint64, er
 	defer t.Lock.Unlock()
 	if transactionId == 0 {
 		kv.version += 1
+		common.SugaredLog().Debugf("KV PUT %s %s %d %x", key, value, transactionId, kv.version)
 		kv.writeLog("put", key, value, "0", strconv.FormatUint(kv.version, 16))
 		t.Layer[key] = ValueWithVersion{Value: &value, Version: kv.version}
 		return kv.version, nil
 	} else {
+		common.SugaredLog().Debugf("KV PUT %s %s %d", key, value, transactionId)
 		kv.writeLog("put", key, value, strconv.FormatInt(int64(transactionId), 16))
 		t.Layer[key] = ValueWithVersion{Value: &value, Version: 0}
 		return 0, nil
@@ -169,10 +174,12 @@ func (kv *SimpleKV) Delete(key string, transactionId int) (uint64, error) {
 	defer t.Lock.Unlock()
 	if transactionId == 0 {
 		kv.version += 1
+		common.SugaredLog().Debugf("KV DELETE %s %d %x", key, transactionId, kv.version)
 		kv.writeLog("del", key, "0", strconv.FormatUint(kv.version, 16))
 		t.Layer[key] = ValueWithVersion{Value: nil, Version: kv.version}
 		return kv.version, nil
 	} else {
+		common.SugaredLog().Debugf("KV DELETE %s %d", key, transactionId)
 		kv.writeLog("del", key, strconv.FormatInt(int64(transactionId), 16))
 		t.Layer[key] = ValueWithVersion{Value: nil, Version: 0}
 		return 0, nil
@@ -326,7 +333,7 @@ func (kv *SimpleKV) writeLog(op string, args ...string) {
 
 // flush log
 func (kv *SimpleKV) Flush() {
-	common.SugaredLog().Debugf("KV FLUSHING")
+	common.SugaredLog().Debugf("KV FLUSHING %x", kv.version)
 	if err := kv.logFile.Sync(); err != nil {
 		common.Log().Error("Failed to flush log.", zap.Error(err))
 	}
@@ -403,7 +410,7 @@ func NewKVStore(pathString string) (*SimpleKV, error) {
 		if err != nil {
 			return nil, err
 		}
-		log.Info("Recovered base from log entries.")
+		log.Info("Recovered base from log entries.", zap.Uint64("version", version))
 	}
 	// transaction zero is always used and valid
 	ts := make([]*TransactionStruct, TRANSACTION_COUNT)
@@ -419,6 +426,25 @@ func NewKVStore(pathString string) (*SimpleKV, error) {
 		version:      version,
 		logFile:      logFile,
 	}, nil
+}
+
+func (kv *SimpleKV) GetVersion() uint64 {
+	return kv.version
+}
+
+func (kv *SimpleKV) SetVersion(version uint64) error {
+	trans := kv.getTransaction(0)
+	trans.Lock.Lock()
+	defer trans.Lock.Unlock()
+	if version < kv.version {
+		return errors.New("version number less than current version")
+	} else if version > kv.version {
+		common.SugaredLog().Debugf("KV SET VERSION %x", version)
+		kv.writeLog("set-version", strconv.FormatUint(version, 16))
+		kv.Flush()
+		kv.version = version
+	}
+	return nil
 }
 
 func readString(quoted string) string {
@@ -438,6 +464,7 @@ func readNum(quoted string, base int) uint64 {
 	return ret
 }
 
+// redo log logic
 func ReadLog(scanner *bufio.Scanner) (map[string]ValueWithVersion, uint64, error) {
 	log := common.Log()
 	trans := make([]map[string]ValueWithVersion, TRANSACTION_COUNT)
@@ -523,6 +550,11 @@ func ReadLog(scanner *bufio.Scanner) (map[string]ValueWithVersion, uint64, error
 				panic(0)
 			}
 			trans[transNum] = nil
+		case "set-version":
+			if len(tokens) != 2 {
+				panic(0)
+			}
+			version = readNum(tokens[1], 16)
 		default:
 			panic(nil)
 		}
@@ -538,7 +570,7 @@ func (kv *SimpleKV) Extract(divider func(key string) bool, version uint64) map[s
 	// extract content out
 	b := make(map[string]ValueWithVersion)
 	for k, v := range kv.base {
-		if divider(k) && v.Version >= version {
+		if divider(k) && v.Version > version {
 			b[k] = v
 		}
 	}
@@ -549,7 +581,7 @@ func (kv *SimpleKV) Extract(divider func(key string) bool, version uint64) map[s
 	t.Lock.RLock()
 	defer t.Lock.RUnlock()
 	for k, v := range t.Layer {
-		if divider(k) && v.Version >= version {
+		if divider(k) && v.Version > version {
 			b[k] = v
 		}
 	}

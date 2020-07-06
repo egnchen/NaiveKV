@@ -7,9 +7,11 @@ import (
 	pb "github.com/eyeKill/KV/proto"
 	"github.com/samuel/go-zookeeper/zk"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/metadata"
 	"path"
 	"strconv"
 	"sync"
+	"time"
 )
 
 const (
@@ -17,8 +19,15 @@ const (
 	MODE_BACKUP  = common.ZK_BACKUP_WORKER_NAME
 )
 
+const (
+	HEADER_VERSION_NUMBER   = "versionNumber"
+	HEADER_CLIENT_WORKER_ID = "workerId"
+)
+
 type WorkerServer struct {
 	pb.UnimplementedKVWorkerServer
+	pb.UnimplementedKVWorkerInternalServer
+	pb.UnimplementedKVBackupServer
 	Hostname         string
 	Port             uint16
 	FilePath         string
@@ -28,26 +37,31 @@ type WorkerServer struct {
 	SlotTableVersion uint32
 	NodeName         string
 	config           common.WorkerConfig
-	backupCh         chan *pb.BackupEntry
-	lock             sync.RWMutex
-	backups          map[string]*SyncRoutine
-	backupVersion    uint64
-	backupCond       *sync.Cond
-	migrations       map[string]*SyncRoutine
-	mode             string
-	version          uint64
-	versionCond      *sync.Cond
-	modeChangeCond   *sync.Cond
+
+	// for backup routine
+	backupCh      chan *pb.BackupEntry
+	backupLock    sync.RWMutex
+	backups       map[string]*SyncRoutine
+	backupVersion uint64
+	backupCond    *sync.Cond
+
+	// for migration
+	migrations  map[string]*SyncRoutine
+	version     uint64
+	versionCond *sync.Cond
+
+	// for mode switching
+	mode           string
+	modeChangeCond *sync.Cond
+	// specified when first being run, help determine whether it should step down as the temporary primary
+	origMode string
+	readOnly bool
 
 	// three goroutines: watch workers, watch migration, do sync.
 	// watch workers & watch migration should be updated once mode changes
 	WatchWorkerStopChan    chan struct{}
 	WatchMigrationStopChan chan struct{}
 	SyncStopChan           chan struct{}
-
-	// original mode, specified when being first run.
-	// this help determine whether it should step down as the temporary primary
-	origMode string
 }
 
 // initialize a server
@@ -64,16 +78,17 @@ func NewServer(hostname string, port uint16, filePath string, id common.WorkerId
 		kv:                     kv,
 		mode:                   mode,
 		origMode:               mode,
-		lock:                   sync.RWMutex{},
+		backupLock:             sync.RWMutex{},
 		backups:                make(map[string]*SyncRoutine),
 		backupCh:               make(chan *pb.BackupEntry),
 		migrations:             make(map[string]*SyncRoutine),
 		versionCond:            sync.NewCond(&sync.Mutex{}),
 		modeChangeCond:         sync.NewCond(&sync.Mutex{}),
 		backupCond:             sync.NewCond(&sync.Mutex{}),
-		WatchMigrationStopChan: make(chan struct{}),
-		WatchWorkerStopChan:    make(chan struct{}),
-		SyncStopChan:           make(chan struct{}),
+		WatchMigrationStopChan: make(chan struct{}, 4),
+		WatchWorkerStopChan:    make(chan struct{}, 4),
+		SyncStopChan:           make(chan struct{}, 4),
+		readOnly:               false,
 	}, nil
 }
 
@@ -109,6 +124,7 @@ func (s *WorkerServer) RegisterToZk(conn *zk.Conn, weight float32) error {
 func (s *WorkerServer) Watch() {
 	log := common.SugaredLog()
 	for {
+		log.Infof("Watching other workers...")
 		worker, err := common.GetAndWatchWorker(s.conn, s.Id)
 		if err != nil {
 			log.Error("Failed to watch worker node.", zap.Error(err))
@@ -125,6 +141,7 @@ func (s *WorkerServer) Watch() {
 			if !ok {
 				return
 			}
+			continue
 		}
 	}
 }
@@ -134,9 +151,9 @@ func (s *WorkerServer) WatchMigration() {
 	log := common.SugaredLog()
 	for {
 		p := path.Join(common.ZK_MIGRATIONS_ROOT, strconv.Itoa(int(s.SlotTableVersion)))
-		log.Info("Watching migration node...", zap.String("path", p))
 		// keep waiting until migration node shows up
 		for {
+			log.Info("Watching migration node...", zap.String("path", p))
 			exists, _, eventChan, err := s.conn.ExistsW(p)
 			if err != nil {
 				log.Error("Failed to watch migration node.", zap.Error(err))
@@ -155,7 +172,7 @@ func (s *WorkerServer) WatchMigration() {
 		}
 		// only primary workers have to watch migration
 		if s.mode == MODE_PRIMARY {
-			log.Infof("Primary worker is dealing with migration #%d's logic...", s.SlotTableVersion)
+			log.Infof("Doing migration #%d...", s.SlotTableVersion)
 			if err := s.doMigration(); err != nil {
 				log.Error("Failed to do migration.", zap.Error(err))
 			}
@@ -167,6 +184,7 @@ func (s *WorkerServer) WatchMigration() {
 }
 
 func (s *WorkerServer) transformTo(mode string) error {
+	s.readOnly = false
 	if mode != MODE_PRIMARY && mode != MODE_BACKUP {
 		return errors.New("invalid mode")
 	}
@@ -174,16 +192,30 @@ func (s *WorkerServer) transformTo(mode string) error {
 		return errors.New("no need for transformation")
 	}
 	// first re-register itself in zookeeper
-	log := common.Log()
+	log := common.SugaredLog()
 	n := common.NewWorkerNode(s.Hostname, s.Port, s.Id)
 	p := path.Join(common.ZK_WORKERS_ROOT, strconv.Itoa(int(s.Id)))
 	var nodePath string
 	if mode == MODE_PRIMARY {
 		nodePath = path.Join(p, common.ZK_PRIMARY_WORKER_NAME)
 	} else {
+		// transform to backup
+		log.Info("Waiting for all migration routines to close...")
+		for len(s.migrations) != 0 {
+			time.Sleep(500 * time.Millisecond)
+		}
+		// close all migration & backup routines
+		log.Info("Closing all backup routines...")
+		for n := range s.backups {
+			if err := s.RemoveBackupRoutine(n); err != nil {
+				return err
+			}
+		}
 		nodePath = path.Join(p, common.ZK_BACKUP_WORKER_NAME)
 	}
 	originalPath := path.Join(p, s.NodeName)
+	log.Infof("Deleting %s, creating %s", originalPath, nodePath)
+	println(originalPath)
 	if err := s.conn.Delete(originalPath, -1); err != nil {
 		return err
 	}
@@ -193,9 +225,83 @@ func (s *WorkerServer) transformTo(mode string) error {
 	}
 	s.NodeName = path.Base(name)
 	s.mode = mode
+	if s.mode == MODE_PRIMARY {
+		worker, err := common.GetAndWatchWorker(s.conn, s.Id)
+		if err != nil {
+			log.Info("Failed to get worker info.", zap.Error(err))
+		}
+		// get number of actual backups from election path
+		electionPath := path.Join(common.ZK_ELECTION_ROOT, strconv.Itoa(int(s.Id)))
+		children, _, err := s.conn.Children(electionPath)
+		// primary should be responsible for cleaning the election directory
+		if err := common.ZkDeleteRecursive(s.conn, electionPath); err != nil {
+			log.Error("Failed to clear election path", zap.Error(err))
+			return err
+		}
+		// use read-only mode if numBackup in config & actual number of backups does not match
+		if len(children) != worker.NumBackups {
+			log.Infof("Backup number and config number, config num = %d, actual = %d",
+				worker.NumBackups, len(children))
+			s.readOnly = true
+		}
+	}
 	// now issue stop and restart all goroutines
 	log.Info("Restarting goroutines...")
 	s.WatchMigrationStopChan <- struct{}{}
 	s.WatchWorkerStopChan <- struct{}{}
 	return nil
+}
+
+// backup server implementations
+
+// Transfer bunch of data with transaction
+func (s *WorkerServer) Transfer(server pb.KVBackup_TransferServer) error {
+	// receive client's worker id
+	md, ok := metadata.FromIncomingContext(server.Context())
+	if !ok {
+		return errors.New("failed to get remote worker id")
+	}
+	ks := md.Get(HEADER_CLIENT_WORKER_ID)
+	if len(ks) != 1 {
+		return errors.New("failed to get remote worker id")
+	}
+	rid, err := strconv.Atoi(ks[0])
+	remoteId := common.WorkerId(rid)
+	if err != nil {
+		return errors.New("failed to get remote worker id")
+	}
+
+	if s.mode == MODE_PRIMARY && remoteId != s.Id {
+		return s.MigrateTransfer(server, remoteId)
+	} else if remoteId == s.Id {
+		return s.BackupTransfer(server)
+	} else {
+		return errors.New("worker mode invalid")
+	}
+}
+
+// loss less sync
+func (s *WorkerServer) Sync(server pb.KVBackup_SyncServer) error {
+	// same logic, receive remote id
+	md, ok := metadata.FromIncomingContext(server.Context())
+	if !ok {
+		return errors.New("failed to get remote worker id")
+	}
+	ks := md.Get(HEADER_CLIENT_WORKER_ID)
+	if len(ks) != 1 {
+		return errors.New("failed to get remote worker id")
+	}
+	rid, err := strconv.Atoi(ks[0])
+	remoteId := common.WorkerId(rid)
+	if err != nil {
+		return errors.New("failed to get remote worker id")
+	}
+
+	if s.mode == MODE_PRIMARY && remoteId != s.Id {
+		return s.MigrateSync(server)
+	} else if remoteId == s.Id {
+		return s.BackupSync(server)
+	} else {
+		return errors.New("worker mode invalid")
+	}
 }

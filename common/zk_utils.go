@@ -11,7 +11,7 @@ import (
 )
 
 func ConnectToZk(servers []string) (*zk.Conn, error) {
-	conn, _, err := zk.Connect(servers, 500*time.Millisecond)
+	conn, _, err := zk.Connect(servers, 2000*time.Millisecond)
 	if err == nil {
 		conn.SetLogger(&ZkLoggerAdapter{})
 	}

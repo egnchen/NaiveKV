@@ -71,7 +71,7 @@ func (m SingleNodeMigration) GetDestinations() []WorkerId {
 		workers[dst] = true
 	}
 	ret := make([]WorkerId, 0, len(workers))
-	for dst, _ := range workers {
+	for dst := range workers {
 		ret = append(ret, dst)
 	}
 	return ret
@@ -106,7 +106,9 @@ func (m Migration) Separate(original *HashSlotRing) map[WorkerId]*SingleNodeMigr
 		if srcId == 0 {
 			continue
 		}
-		ret[srcId] = NewSingleNodeMigration(srcId, original, &m)
+		if _, ok := ret[srcId]; !ok {
+			ret[srcId] = NewSingleNodeMigration(srcId, original, &m)
+		}
 	}
 	return ret
 }
@@ -117,7 +119,7 @@ func (m Migration) GetDestinations() []WorkerId {
 		workers[dst] = true
 	}
 	ret := make([]WorkerId, 0, len(workers))
-	for dst, _ := range workers {
+	for dst := range workers {
 		ret = append(ret, dst)
 	}
 	return ret
@@ -125,6 +127,7 @@ func (m Migration) GetDestinations() []WorkerId {
 
 func (m Migration) Migrate(original *HashSlotRing) *HashSlotRing {
 	ret := make(HashSlotRing, len(*original))
+	copy(ret, *original)
 	for slot, dst := range m.Table {
 		ret[slot] = dst
 	}

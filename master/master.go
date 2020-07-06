@@ -69,7 +69,7 @@ func (m *Server) doMigration(newWorkers map[common.WorkerId]*common.Worker) {
 	// commit hash slot ring to zookeeper
 	newSlot := migration.Migrate(m.slots)
 	bin, _ := json.Marshal(newSlot)
-	newVersion := []byte(strconv.Itoa(int(migration.Version+1)))
+	newVersion := []byte(strconv.Itoa(int(migration.Version + 1)))
 	if _, err := common.ZkMulti(m.conn, &zk.SetDataRequest{Path: common.ZK_TABLE_VERSION, Data: newVersion, Version: -1},
 		&zk.SetDataRequest{Path: common.ZK_TABLE, Data: bin, Version: -1}); err != nil {
 		log.Error("Failed to upload new slots to zookeeper.", zap.Error(err))
@@ -132,7 +132,6 @@ func (m *Server) syncMigration(migration *common.Migration) (*common.Distributed
 	if err != nil {
 		log.Error("Error occurred while uploading migration plan.", zap.Error(err))
 	}
-	log.Infof("Successfully uploaded migration plan version %d.", migration.Version)
 
 	completeSem := common.DistributedAtomicInteger{
 		Conn: m.conn,
@@ -314,7 +313,7 @@ func (m *Server) Watch(stopChan <-chan struct{}) {
 			Chan: reflect.ValueOf(stopChan),
 		})
 		m.rwLock.RUnlock()
-		log.Sugar().Infof("Watching %d channels, %d workers...\n", len(selectCases), len(selectCases) - 2)
+		log.Sugar().Infof("Watching %d channels, %d workers...\n", len(selectCases), len(selectCases)-2)
 		chosen, recv, recvOK := reflect.Select(selectCases)
 		if chosen == 0 {
 			if !recvOK {
