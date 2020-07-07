@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc/metadata"
 	"io"
+	"os"
 	"path"
 	"reflect"
 	"strconv"
@@ -58,6 +59,16 @@ func (s *WorkerServer) MigrateTransfer(server pb.KVBackup_TransferServer, remote
 	for {
 		ent, err := server.Recv()
 		if err == io.EOF {
+			// for presentation purposes...
+			if os.Getenv("CRASH") == "MIGRATE_SYNC" {
+				if err := server.SendAndClose(&pb.BackupReply{
+					Status:  pb.Status_EFAILED,
+					Version: 0,
+				}); err != nil {
+					return err
+				}
+				os.Exit(-1)
+			}
 			// commit transaction
 			if err := s.kv.Commit(tid); err != nil {
 				log.Error("Failed to commit", zap.Error(err))
@@ -297,6 +308,9 @@ func (s *WorkerServer) DoSync() {
 }
 
 func (s *WorkerServer) Put(_ context.Context, pair *pb.KVPair) (*pb.PutResponse, error) {
+	if pair.SlotVersion != s.SlotTableVersion.Load() {
+		return &pb.PutResponse{Status: pb.Status_EINVVERSION}, nil
+	}
 	if s.mode != MODE_PRIMARY || s.readOnly {
 		return &pb.PutResponse{Status: pb.Status_ENOSERVER}, nil
 	}
@@ -318,6 +332,9 @@ func (s *WorkerServer) Put(_ context.Context, pair *pb.KVPair) (*pb.PutResponse,
 }
 
 func (s *WorkerServer) Get(_ context.Context, key *pb.Key) (*pb.GetResponse, error) {
+	if key.SlotVersion != s.SlotTableVersion.Load() {
+		return &pb.GetResponse{Status: pb.Status_EINVVERSION}, nil
+	}
 	value, err := s.kv.Get(key.Key, 0)
 	if err == nil {
 		return &pb.GetResponse{
@@ -333,6 +350,9 @@ func (s *WorkerServer) Get(_ context.Context, key *pb.Key) (*pb.GetResponse, err
 }
 
 func (s *WorkerServer) Delete(_ context.Context, key *pb.Key) (*pb.DeleteResponse, error) {
+	if key.SlotVersion != s.SlotTableVersion.Load() {
+		return &pb.DeleteResponse{Status: pb.Status_EINVVERSION}, nil
+	}
 	if s.mode != MODE_PRIMARY || s.readOnly {
 		return &pb.DeleteResponse{Status: pb.Status_EINVSERVER}, nil
 	}
@@ -503,14 +523,14 @@ func (s *WorkerServer) primaryWatch(worker common.Worker) {
 // migration logic
 func (s *WorkerServer) doMigration() error {
 	log := common.SugaredLog()
-	p := path.Join(common.ZK_MIGRATIONS_ROOT, strconv.Itoa(int(s.SlotTableVersion)), strconv.Itoa(int(s.Id)))
+	p := path.Join(common.ZK_MIGRATIONS_ROOT, strconv.Itoa(int(s.SlotTableVersion.Load())), strconv.Itoa(int(s.Id)))
 
 	// fetch migration content
 	var migration common.SingleNodeMigration
 	err := common.ZkGet(s.conn, p, &migration)
 	if err == zk.ErrNoNode {
 		log.Info("Migration complete, nothing to do.")
-		s.SlotTableVersion += 1
+		s.SlotTableVersion.Inc()
 		return nil
 	} else if err != nil {
 		return err
@@ -524,37 +544,38 @@ func (s *WorkerServer) doMigration() error {
 	for _, dst := range destinations {
 		dst := dst // capture loop variable
 		go func() {
+			var routine *SyncRoutine
 			// keep watching, until we get a unique primary node
-			var primaryName string
 			for {
-				worker, err := common.GetAndWatchWorker(s.conn, dst)
-				if err != nil {
-					log.Error("Failed to get worker data.", zap.Int("id", int(dst)), zap.Error(err))
-				}
-				if len(worker.Primaries) == 1 {
-					for n := range worker.Primaries {
-						primaryName = n
+				var primaryName string
+				for {
+					worker, err := common.GetAndWatchWorker(s.conn, dst)
+					if err != nil {
+						log.Error("Failed to get worker data.", zap.Int("id", int(dst)), zap.Error(err))
 					}
-					break
+					if len(worker.Primaries) == 1 {
+						for n := range worker.Primaries {
+							primaryName = n
+						}
+						break
+					}
+					_ = <-worker.Watcher
 				}
-				_ = <-worker.Watcher
-			}
-			fullName := path.Join(common.ZK_WORKERS_ROOT, strconv.Itoa(int(dst)), primaryName)
+				fullName := path.Join(common.ZK_WORKERS_ROOT, strconv.Itoa(int(dst)), primaryName)
 
-			// create mask & register replication strategy
-			mask := func(key string) bool {
-				return migration.GetDestWorkerId(key) == dst
-			}
-			routine, err := NewSyncRoutine(s, fullName, mask, sync.NewCond(&sync.Mutex{}))
-			if err != nil {
-				log.Errorf("Failed to get sync routine for %s: %+v", primaryName, err)
-				return
-			}
-			// start recording new requests that should broadcast
-			s.migrations[primaryName] = routine
-			log.Infof("Sync routine for #%d registered.", dst)
-			// keep preparing until success
-			for {
+				// create mask & register replication strategy
+				mask := func(key string) bool {
+					return migration.GetDestWorkerId(key) == dst
+				}
+				routine, err = NewSyncRoutine(s, fullName, mask, sync.NewCond(&sync.Mutex{}))
+				if err != nil {
+					log.Errorf("Failed to get sync routine for %s: %+v", primaryName, err)
+					return
+				}
+				// start recording new requests that should broadcast
+				s.migrations[primaryName] = routine
+				log.Infof("Sync routine for #%d registered.", dst)
+				// keep preparing until success
 				if err := routine.Prepare(); err == nil {
 					break
 				}
@@ -573,7 +594,7 @@ func (s *WorkerServer) doMigration() error {
 	log.Info("Migration: all sync, reducing semaphore")
 	// all migration targets are in sync
 	// reduce semaphore by one
-	semPath := path.Join(common.ZK_MIGRATIONS_ROOT, strconv.Itoa(int(s.SlotTableVersion)), common.ZK_COMPLETE_SEM_NAME)
+	semPath := path.Join(common.ZK_MIGRATIONS_ROOT, strconv.Itoa(int(s.SlotTableVersion.Load())), common.ZK_COMPLETE_SEM_NAME)
 	sem := common.DistributedAtomicInteger{
 		Conn: s.conn,
 		Path: semPath,
@@ -593,10 +614,10 @@ func (s *WorkerServer) doMigration() error {
 			return err
 		}
 		v := uint32(val)
-		if v == s.SlotTableVersion+1 {
+		if v == s.SlotTableVersion.Load()+1 {
 			// ok
 			log.Info("Migration completed, changing local version number and close all migration connections.")
-			s.SlotTableVersion += 1
+			s.SlotTableVersion.Inc()
 			for _, routine := range s.migrations {
 				close(routine.StopCh)
 			}

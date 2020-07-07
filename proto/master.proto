@@ -7,10 +7,22 @@ package kv.proto;
 option go_package = "proto";
 
 import "common.proto";
+import "google/protobuf/empty.proto";
 
 service KVMaster {
+  rpc GetBackupMasters(google.protobuf.Empty) returns (GetBackupMastersResponse) {}
+  rpc GetSlots(google.protobuf.Empty) returns (GetSlotsResponse) {}
   rpc GetWorkerById(WorkerId) returns (GetWorkerResponse) {}
-  rpc GetWorkerByKey(Key) returns (GetWorkerResponse) {}
+}
+
+message GetBackupMastersResponse {
+  string hostname = 1;
+  int32 port = 2;
+}
+
+message GetSlotsResponse {
+  int32 version = 1;
+  repeated WorkerId slotTable = 2;
 }
 
 message GetWorkerResponse {

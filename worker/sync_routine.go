@@ -121,7 +121,7 @@ func (s *SyncRoutine) Prepare() error {
 	}
 	repl, err := client.CloseAndRecv()
 	if err != nil {
-		log.Fatal("Close & recv got error.", zap.Error(err))
+		log.Error("Close & recv got error.", zap.Error(err))
 		return err
 	}
 	if repl.Version == version {

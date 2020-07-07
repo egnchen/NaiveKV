@@ -7,6 +7,7 @@ import (
 	context "context"
 	fmt "fmt"
 	proto "github.com/golang/protobuf/proto"
+	empty "github.com/golang/protobuf/ptypes/empty"
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -24,6 +25,100 @@ var _ = math.Inf
 // proto package needs to be updated.
 const _ = proto.ProtoPackageIsVersion3 // please upgrade the proto package
 
+type GetBackupMastersResponse struct {
+	Hostname             string   `protobuf:"bytes,1,opt,name=hostname,proto3" json:"hostname,omitempty"`
+	Port                 int32    `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
+	XXX_NoUnkeyedLiteral struct{} `json:"-"`
+	XXX_unrecognized     []byte   `json:"-"`
+	XXX_sizecache        int32    `json:"-"`
+}
+
+func (m *GetBackupMastersResponse) Reset()         { *m = GetBackupMastersResponse{} }
+func (m *GetBackupMastersResponse) String() string { return proto.CompactTextString(m) }
+func (*GetBackupMastersResponse) ProtoMessage()    {}
+func (*GetBackupMastersResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptor_f9c348dec43a6705, []int{0}
+}
+
+func (m *GetBackupMastersResponse) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_GetBackupMastersResponse.Unmarshal(m, b)
+}
+func (m *GetBackupMastersResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_GetBackupMastersResponse.Marshal(b, m, deterministic)
+}
+func (m *GetBackupMastersResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_GetBackupMastersResponse.Merge(m, src)
+}
+func (m *GetBackupMastersResponse) XXX_Size() int {
+	return xxx_messageInfo_GetBackupMastersResponse.Size(m)
+}
+func (m *GetBackupMastersResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_GetBackupMastersResponse.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_GetBackupMastersResponse proto.InternalMessageInfo
+
+func (m *GetBackupMastersResponse) GetHostname() string {
+	if m != nil {
+		return m.Hostname
+	}
+	return ""
+}
+
+func (m *GetBackupMastersResponse) GetPort() int32 {
+	if m != nil {
+		return m.Port
+	}
+	return 0
+}
+
+type GetSlotsResponse struct {
+	Version              int32       `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
+	SlotTable            []*WorkerId `protobuf:"bytes,2,rep,name=slotTable,proto3" json:"slotTable,omitempty"`
+	XXX_NoUnkeyedLiteral struct{}    `json:"-"`
+	XXX_unrecognized     []byte      `json:"-"`
+	XXX_sizecache        int32       `json:"-"`
+}
+
+func (m *GetSlotsResponse) Reset()         { *m = GetSlotsResponse{} }
+func (m *GetSlotsResponse) String() string { return proto.CompactTextString(m) }
+func (*GetSlotsResponse) ProtoMessage()    {}
+func (*GetSlotsResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptor_f9c348dec43a6705, []int{1}
+}
+
+func (m *GetSlotsResponse) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_GetSlotsResponse.Unmarshal(m, b)
+}
+func (m *GetSlotsResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_GetSlotsResponse.Marshal(b, m, deterministic)
+}
+func (m *GetSlotsResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_GetSlotsResponse.Merge(m, src)
+}
+func (m *GetSlotsResponse) XXX_Size() int {
+	return xxx_messageInfo_GetSlotsResponse.Size(m)
+}
+func (m *GetSlotsResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_GetSlotsResponse.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_GetSlotsResponse proto.InternalMessageInfo
+
+func (m *GetSlotsResponse) GetVersion() int32 {
+	if m != nil {
+		return m.Version
+	}
+	return 0
+}
+
+func (m *GetSlotsResponse) GetSlotTable() []*WorkerId {
+	if m != nil {
+		return m.SlotTable
+	}
+	return nil
+}
+
 type GetWorkerResponse struct {
 	Status               Status   `protobuf:"varint,1,opt,name=status,proto3,enum=kv.proto.Status" json:"status,omitempty"`
 	Worker               *Worker  `protobuf:"bytes,2,opt,name=worker,proto3" json:"worker,omitempty"`
@@ -36,7 +131,7 @@ func (m *GetWorkerResponse) Reset()         { *m = GetWorkerResponse{} }
 func (m *GetWorkerResponse) String() string { return proto.CompactTextString(m) }
 func (*GetWorkerResponse) ProtoMessage()    {}
 func (*GetWorkerResponse) Descriptor() ([]byte, []int) {
-	return fileDescriptor_f9c348dec43a6705, []int{0}
+	return fileDescriptor_f9c348dec43a6705, []int{2}
 }
 
 func (m *GetWorkerResponse) XXX_Unmarshal(b []byte) error {
@@ -83,7 +178,7 @@ func (m *Worker) Reset()         { *m = Worker{} }
 func (m *Worker) String() string { return proto.CompactTextString(m) }
 func (*Worker) ProtoMessage()    {}
 func (*Worker) Descriptor() ([]byte, []int) {
-	return fileDescriptor_f9c348dec43a6705, []int{1}
+	return fileDescriptor_f9c348dec43a6705, []int{3}
 }
 
 func (m *Worker) XXX_Unmarshal(b []byte) error {
@@ -119,6 +214,8 @@ func (m *Worker) GetPort() int32 {
 }
 
 func init() {
+	proto.RegisterType((*GetBackupMastersResponse)(nil), "kv.proto.GetBackupMastersResponse")
+	proto.RegisterType((*GetSlotsResponse)(nil), "kv.proto.GetSlotsResponse")
 	proto.RegisterType((*GetWorkerResponse)(nil), "kv.proto.GetWorkerResponse")
 	proto.RegisterType((*Worker)(nil), "kv.proto.Worker")
 }
@@ -128,21 +225,28 @@ func init() {
 }
 
 var fileDescriptor_f9c348dec43a6705 = []byte{
-	// 221 bytes of a gzipped FileDescriptorProto
-	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xe2, 0xe2, 0xc9, 0x4d, 0x2c, 0x2e,
-	0x49, 0x2d, 0xd2, 0x2b, 0x28, 0xca, 0x2f, 0xc9, 0x17, 0xe2, 0xc8, 0x2e, 0x83, 0xb0, 0xa4, 0x78,
-	0x92, 0xf3, 0x73, 0x73, 0xf3, 0xf3, 0x20, 0x3c, 0xa5, 0x74, 0x2e, 0x41, 0xf7, 0xd4, 0x92, 0xf0,
-	0xfc, 0xa2, 0xec, 0xd4, 0xa2, 0xa0, 0xd4, 0xe2, 0x82, 0xfc, 0xbc, 0xe2, 0x54, 0x21, 0x0d, 0x2e,
-	0xb6, 0xe2, 0x92, 0xc4, 0x92, 0xd2, 0x62, 0x09, 0x46, 0x05, 0x46, 0x0d, 0x3e, 0x23, 0x01, 0x3d,
-	0x98, 0x6e, 0xbd, 0x60, 0xb0, 0x78, 0x10, 0x54, 0x1e, 0xa4, 0xb2, 0x1c, 0xac, 0x57, 0x82, 0x49,
-	0x81, 0x51, 0x83, 0x1b, 0x59, 0x25, 0xd4, 0x4c, 0xa8, 0xbc, 0x92, 0x05, 0x17, 0x1b, 0x44, 0x44,
-	0x48, 0x8a, 0x8b, 0x23, 0x23, 0xbf, 0xb8, 0x24, 0x2f, 0x31, 0x37, 0x15, 0x6c, 0x3e, 0x67, 0x10,
-	0x9c, 0x2f, 0x24, 0xc4, 0xc5, 0x52, 0x90, 0x5f, 0x54, 0x02, 0x36, 0x8d, 0x35, 0x08, 0xcc, 0x36,
-	0xea, 0x63, 0xe4, 0xe2, 0xf0, 0x0e, 0xf3, 0x05, 0xfb, 0x46, 0xc8, 0x89, 0x8b, 0x17, 0xee, 0x5e,
-	0xa7, 0x4a, 0xcf, 0x14, 0x21, 0x21, 0x74, 0x1b, 0x3d, 0x53, 0xa4, 0xa4, 0x11, 0x62, 0x18, 0x9e,
-	0x53, 0x62, 0x10, 0xb2, 0xe3, 0xe2, 0x43, 0x32, 0xc3, 0x3b, 0xb5, 0x52, 0x88, 0x17, 0xa1, 0xc1,
-	0x3b, 0xb5, 0x92, 0x80, 0x7e, 0x27, 0xf6, 0x28, 0x56, 0xb0, 0x64, 0x12, 0x1b, 0x98, 0x32, 0x06,
-	0x04, 0x00, 0x00, 0xff, 0xff, 0x02, 0x61, 0x13, 0x95, 0x6b, 0x01, 0x00, 0x00,
+	// 334 bytes of a gzipped FileDescriptorProto
+	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x94, 0x91, 0x4f, 0x4f, 0xf2, 0x40,
+	0x10, 0x87, 0x29, 0xef, 0x0b, 0x94, 0x01, 0x0d, 0xee, 0xc1, 0x34, 0xe5, 0x42, 0xf6, 0xd4, 0x53,
+	0x31, 0x78, 0xf1, 0x68, 0x9a, 0x18, 0x82, 0xc6, 0xc4, 0x14, 0xa3, 0x89, 0x07, 0x93, 0x02, 0x2b,
+	0x1a, 0xda, 0x4e, 0xb3, 0x3b, 0x60, 0xf8, 0xba, 0x7e, 0x12, 0xc3, 0x6e, 0xff, 0xd8, 0x44, 0x0e,
+	0x9e, 0xba, 0xb3, 0x33, 0x7d, 0x76, 0xf7, 0xf9, 0x41, 0x3f, 0x89, 0x14, 0x09, 0xe9, 0x67, 0x12,
+	0x09, 0x99, 0xbd, 0xd9, 0x99, 0x95, 0xdb, 0x5f, 0x62, 0x92, 0x60, 0x9a, 0x57, 0xc3, 0x35, 0xe2,
+	0x3a, 0x16, 0x63, 0x5d, 0x2d, 0xb6, 0x6f, 0x63, 0x91, 0x64, 0xb4, 0x37, 0x4d, 0x7e, 0x0b, 0xce,
+	0x54, 0x50, 0x10, 0x2d, 0x37, 0xdb, 0xec, 0x5e, 0xd3, 0x54, 0x28, 0x54, 0x86, 0xa9, 0x12, 0xcc,
+	0x05, 0xfb, 0x1d, 0x15, 0xa5, 0x51, 0x22, 0x1c, 0x6b, 0x64, 0x79, 0xdd, 0xb0, 0xac, 0x19, 0x83,
+	0xff, 0x19, 0x4a, 0x72, 0x9a, 0x23, 0xcb, 0x6b, 0x85, 0x7a, 0xcd, 0x5f, 0x61, 0x30, 0x15, 0x34,
+	0x8f, 0x91, 0x2a, 0x86, 0x03, 0x9d, 0x9d, 0x90, 0xea, 0x03, 0x53, 0x8d, 0x68, 0x85, 0x45, 0xc9,
+	0x2e, 0xa0, 0xab, 0x62, 0xa4, 0xc7, 0x68, 0x11, 0x0b, 0xa7, 0x39, 0xfa, 0xe7, 0xf5, 0x26, 0xcc,
+	0x2f, 0x9e, 0xe0, 0x3f, 0xa3, 0xdc, 0x08, 0x39, 0x5b, 0x85, 0xd5, 0x10, 0x5f, 0xc3, 0xd9, 0x54,
+	0x90, 0xe9, 0x94, 0x07, 0x78, 0xd0, 0x56, 0x14, 0xd1, 0x56, 0x69, 0xfe, 0xe9, 0x64, 0x50, 0x31,
+	0xe6, 0x7a, 0x3f, 0xcc, 0xfb, 0x87, 0xc9, 0x4f, 0xfd, 0xaf, 0xbe, 0x74, 0xef, 0xe7, 0x64, 0xce,
+	0xcc, 0xfb, 0xfc, 0x0a, 0xda, 0x66, 0xe7, 0xaf, 0x0a, 0x26, 0x5f, 0x16, 0xd8, 0x77, 0x4f, 0x46,
+	0x24, 0x7b, 0xd0, 0x3e, 0x6a, 0x6e, 0xd9, 0xb9, 0x6f, 0xd2, 0xf0, 0x8b, 0x34, 0xfc, 0x9b, 0x43,
+	0x1a, 0x2e, 0xaf, 0x2e, 0x73, 0x2c, 0x0f, 0xde, 0x60, 0xd7, 0x60, 0x17, 0x86, 0x8f, 0x92, 0xdc,
+	0x1a, 0xa9, 0x96, 0x06, 0x6f, 0xb0, 0x00, 0x4e, 0x4a, 0x87, 0xc1, 0x7e, 0xb6, 0x62, 0xbf, 0x38,
+	0x77, 0x87, 0x35, 0x44, 0x5d, 0x38, 0x6f, 0x04, 0x9d, 0x97, 0x96, 0x39, 0xb3, 0xad, 0x3f, 0x97,
+	0xdf, 0x01, 0x00, 0x00, 0xff, 0xff, 0x38, 0xdf, 0xa7, 0x2a, 0x88, 0x02, 0x00, 0x00,
 }
 
 // Reference imports to suppress errors if they are not otherwise used.
@@ -157,8 +261,9 @@ const _ = grpc.SupportPackageIsVersion6
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://godoc.org/google.golang.org/grpc#ClientConn.NewStream.
 type KVMasterClient interface {
+	GetBackupMasters(ctx context.Context, in *empty.Empty, opts ...grpc.CallOption) (*GetBackupMastersResponse, error)
+	GetSlots(ctx context.Context, in *empty.Empty, opts ...grpc.CallOption) (*GetSlotsResponse, error)
 	GetWorkerById(ctx context.Context, in *WorkerId, opts ...grpc.CallOption) (*GetWorkerResponse, error)
-	GetWorkerByKey(ctx context.Context, in *Key, opts ...grpc.CallOption) (*GetWorkerResponse, error)
 }
 
 type kVMasterClient struct {
@@ -167,6 +272,24 @@ type kVMasterClient struct {
 
 func NewKVMasterClient(cc grpc.ClientConnInterface) KVMasterClient {
 	return &kVMasterClient{cc}
+}
+
+func (c *kVMasterClient) GetBackupMasters(ctx context.Context, in *empty.Empty, opts ...grpc.CallOption) (*GetBackupMastersResponse, error) {
+	out := new(GetBackupMastersResponse)
+	err := c.cc.Invoke(ctx, "/kv.proto.KVMaster/GetBackupMasters", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *kVMasterClient) GetSlots(ctx context.Context, in *empty.Empty, opts ...grpc.CallOption) (*GetSlotsResponse, error) {
+	out := new(GetSlotsResponse)
+	err := c.cc.Invoke(ctx, "/kv.proto.KVMaster/GetSlots", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *kVMasterClient) GetWorkerById(ctx context.Context, in *WorkerId, opts ...grpc.CallOption) (*GetWorkerResponse, error) {
@@ -178,34 +301,65 @@ func (c *kVMasterClient) GetWorkerById(ctx context.Context, in *WorkerId, opts .
 	return out, nil
 }
 
-func (c *kVMasterClient) GetWorkerByKey(ctx context.Context, in *Key, opts ...grpc.CallOption) (*GetWorkerResponse, error) {
-	out := new(GetWorkerResponse)
-	err := c.cc.Invoke(ctx, "/kv.proto.KVMaster/GetWorkerByKey", in, out, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // KVMasterServer is the server API for KVMaster service.
 type KVMasterServer interface {
+	GetBackupMasters(context.Context, *empty.Empty) (*GetBackupMastersResponse, error)
+	GetSlots(context.Context, *empty.Empty) (*GetSlotsResponse, error)
 	GetWorkerById(context.Context, *WorkerId) (*GetWorkerResponse, error)
-	GetWorkerByKey(context.Context, *Key) (*GetWorkerResponse, error)
 }
 
 // UnimplementedKVMasterServer can be embedded to have forward compatible implementations.
 type UnimplementedKVMasterServer struct {
 }
 
+func (*UnimplementedKVMasterServer) GetBackupMasters(ctx context.Context, req *empty.Empty) (*GetBackupMastersResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetBackupMasters not implemented")
+}
+func (*UnimplementedKVMasterServer) GetSlots(ctx context.Context, req *empty.Empty) (*GetSlotsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetSlots not implemented")
+}
 func (*UnimplementedKVMasterServer) GetWorkerById(ctx context.Context, req *WorkerId) (*GetWorkerResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetWorkerById not implemented")
-}
-func (*UnimplementedKVMasterServer) GetWorkerByKey(ctx context.Context, req *Key) (*GetWorkerResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetWorkerByKey not implemented")
 }
 
 func RegisterKVMasterServer(s *grpc.Server, srv KVMasterServer) {
 	s.RegisterService(&_KVMaster_serviceDesc, srv)
+}
+
+func _KVMaster_GetBackupMasters_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(empty.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KVMasterServer).GetBackupMasters(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/kv.proto.KVMaster/GetBackupMasters",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KVMasterServer).GetBackupMasters(ctx, req.(*empty.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KVMaster_GetSlots_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(empty.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KVMasterServer).GetSlots(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/kv.proto.KVMaster/GetSlots",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KVMasterServer).GetSlots(ctx, req.(*empty.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _KVMaster_GetWorkerById_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -226,35 +380,21 @@ func _KVMaster_GetWorkerById_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
-func _KVMaster_GetWorkerByKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(Key)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(KVMasterServer).GetWorkerByKey(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: "/kv.proto.KVMaster/GetWorkerByKey",
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(KVMasterServer).GetWorkerByKey(ctx, req.(*Key))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 var _KVMaster_serviceDesc = grpc.ServiceDesc{
 	ServiceName: "kv.proto.KVMaster",
 	HandlerType: (*KVMasterServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "GetWorkerById",
-			Handler:    _KVMaster_GetWorkerById_Handler,
+			MethodName: "GetBackupMasters",
+			Handler:    _KVMaster_GetBackupMasters_Handler,
 		},
 		{
-			MethodName: "GetWorkerByKey",
-			Handler:    _KVMaster_GetWorkerByKey_Handler,
+			MethodName: "GetSlots",
+			Handler:    _KVMaster_GetSlots_Handler,
+		},
+		{
+			MethodName: "GetWorkerById",
+			Handler:    _KVMaster_GetWorkerById_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

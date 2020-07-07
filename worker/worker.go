@@ -6,6 +6,7 @@ import (
 	"github.com/eyeKill/KV/common"
 	pb "github.com/eyeKill/KV/proto"
 	"github.com/samuel/go-zookeeper/zk"
+	"go.uber.org/atomic"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/metadata"
 	"path"
@@ -34,7 +35,7 @@ type WorkerServer struct {
 	Id               common.WorkerId
 	conn             *zk.Conn
 	kv               KVStore
-	SlotTableVersion uint32
+	SlotTableVersion atomic.Uint32
 	NodeName         string
 	config           common.WorkerConfig
 

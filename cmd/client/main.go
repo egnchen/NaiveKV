@@ -19,12 +19,13 @@ import (
 	"time"
 )
 
-const HELP_STRING = `Usage:
-put <key> <value>
-get <key>
-delete <key>
-exit
-quit
+const HELP_STRING = `Welcome to NaiveKV.
+Usages:
+* put <key> <value>
+* get <key>
+* delete <key>
+* exit
+* quit
 `
 
 var (

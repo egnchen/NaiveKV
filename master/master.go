@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/eyeKill/KV/common"
 	pb "github.com/eyeKill/KV/proto"
+	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/samuel/go-zookeeper/zk"
 	"go.uber.org/zap"
 	"path"
@@ -27,8 +28,10 @@ type Server struct {
 	rwLock        sync.RWMutex
 	slots         *common.HashSlotRing
 	allocator     common.HashSlotAllocator
-	rootWatch     <-chan zk.Event
 	workers       map[common.WorkerId]*common.Worker
+	rootWatch     <-chan zk.Event
+	masters       []*common.MasterNode
+	mastersWatch  <-chan zk.Event
 }
 
 func NewMasterServer(hostname string, port uint16) Server {
@@ -140,36 +143,54 @@ func (m *Server) syncMigration(migration *common.Migration) (*common.Distributed
 	return &completeSem, nil
 }
 
-// gRPC call handler
-func (m *Server) GetWorkerByKey(_ context.Context, key *pb.Key) (*pb.GetWorkerResponse, error) {
+func (m *Server) GetSlots(_ context.Context, _ *empty.Empty) (*pb.GetSlotsResponse, error) {
 	m.rwLock.RLock()
 	defer m.rwLock.RUnlock()
-	id := m.slots.GetWorkerIdByKey(key.Key)
-	if id == 0 {
+	resp := pb.GetSlotsResponse{}
+	resp.Version = int32(m.version)
+	resp.SlotTable = make([]*pb.WorkerId, len(*m.slots))
+	for i, id := range *m.slots {
+		resp.SlotTable[i] = &pb.WorkerId{Id: uint32(id)}
+	}
+	return &resp, nil
+}
+
+func (m *Server) GetWorkerById(_ context.Context, in *pb.WorkerId) (*pb.GetWorkerResponse, error) {
+	m.rwLock.RLock()
+	defer m.rwLock.RUnlock()
+	w, ok := m.workers[common.WorkerId(in.Id)]
+	if !ok {
+		return &pb.GetWorkerResponse{
+			Status: pb.Status_EINVWID,
+			Worker: nil,
+		}, nil
+	}
+	if len(w.Primaries) == 0 {
 		return &pb.GetWorkerResponse{
 			Status: pb.Status_ENOSERVER,
 			Worker: nil,
 		}, nil
 	}
-	worker := m.workers[id]
-	if len(worker.Primaries) == 1 {
-		var workerNode *common.WorkerNode
-		for _, v := range worker.Primaries {
-			workerNode = v
+	// get the one and only one primary
+	var pk string
+	var p *common.WorkerNode
+	for k, v := range w.Primaries {
+		if pk == "" || k < pk {
+			pk = k
+			p = v
 		}
-		return &pb.GetWorkerResponse{
-			Status: pb.Status_OK,
-			Worker: &pb.Worker{
-				Hostname: workerNode.Host.Hostname,
-				Port:     int32(workerNode.Host.Port),
-			},
-		}, nil
-	} else {
-		return &pb.GetWorkerResponse{
-			Status: pb.Status_ENOSERVER,
-			Worker: nil,
-		}, nil
 	}
+	if p == nil {
+		common.Log().Error("Invalid worker node.")
+	}
+	worker := pb.Worker{
+		Hostname: p.Host.Hostname,
+		Port:     int32(p.Host.Port),
+	}
+	return &pb.GetWorkerResponse{
+		Status: 0,
+		Worker: &worker,
+	}, nil
 }
 
 func (m *Server) RegisterToZk(conn *zk.Conn) error {
@@ -308,6 +329,12 @@ func (m *Server) Watch(stopChan <-chan struct{}) {
 				Chan: reflect.ValueOf(c.Watcher),
 			})
 		}
+		// and watch masters
+		selectCases = append(selectCases, reflect.SelectCase{
+			Dir:  reflect.SelectRecv,
+			Chan: reflect.ValueOf(m.mastersWatch),
+		})
+		// and the stop channel
 		selectCases = append(selectCases, reflect.SelectCase{
 			Dir:  reflect.SelectRecv,
 			Chan: reflect.ValueOf(stopChan),
@@ -346,6 +373,20 @@ func (m *Server) Watch(stopChan <-chan struct{}) {
 			}
 			m.doMigration(newWorkers)
 			// workers will never disappear
+		} else if chosen == len(selectCases)-2 {
+			// masters got something new
+			children, _, eventChan, err := m.conn.ChildrenW(common.ZK_MASTERS_ROOT)
+			if err != nil {
+				log.Error("Failed to watch master nodes.", zap.Error(err))
+			}
+			masters := make([]*common.MasterNode, 0)
+			for _, c := range children {
+				var node common.MasterNode
+				if err := common.ZkGet(m.conn, path.Join(common.ZK_MASTERS_ROOT, c), &node); err != nil {
+					log.Warn("Failed to get master nodes, skipping this round and wait for the next.", zap.Error(err))
+				}
+				masters = append(masters, &node)
+			}
 		} else if chosen == len(selectCases)-1 {
 			// stop chan
 			return

@@ -7,6 +7,7 @@ option go_package = "proto";
 
 message Key {
   string key = 1;
+  uint32 slotVersion = 2;
 }
 
 message Value {
@@ -16,6 +17,7 @@ message Value {
 message KVPair {
   string key = 1;
   string value = 2;
+  uint32 slotVersion = 3;
 }
 
 message WorkerId {
@@ -43,4 +45,6 @@ enum Status {
   ENOSERVER = 2;
   EFAILED = 3;
   EINVSERVER = 4;
+  EINVWID = 5;
+  EINVVERSION = 6;
 }
