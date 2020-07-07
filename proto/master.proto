@@ -4,7 +4,7 @@
 syntax = "proto3";
 
 package kv.proto;
-option go_package = "proto";
+option go_package = ".;proto";
 
 import "common.proto";
 import "google/protobuf/empty.proto";
@@ -21,7 +21,7 @@ message GetBackupMastersResponse {
 }
 
 message GetSlotsResponse {
-  int32 version = 1;
+  uint32 version = 1;
   repeated WorkerId slotTable = 2;
 }
 

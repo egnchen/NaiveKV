@@ -5,7 +5,7 @@
 syntax = "proto3";
 
 package kv.proto;
-option go_package = "proto";
+option go_package = ".;proto";
 
 import "common.proto";
 import "google/protobuf/empty.proto";

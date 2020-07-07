@@ -147,7 +147,7 @@ func (m *Server) GetSlots(_ context.Context, _ *empty.Empty) (*pb.GetSlotsRespon
 	m.rwLock.RLock()
 	defer m.rwLock.RUnlock()
 	resp := pb.GetSlotsResponse{}
-	resp.Version = int32(m.version)
+	resp.Version = m.version
 	resp.SlotTable = make([]*pb.WorkerId, len(*m.slots))
 	for i, id := range *m.slots {
 		resp.SlotTable[i] = &pb.WorkerId{Id: uint32(id)}
@@ -374,7 +374,7 @@ func (m *Server) Watch(stopChan <-chan struct{}) {
 			m.doMigration(newWorkers)
 			// workers will never disappear
 		} else if chosen == len(selectCases)-2 {
-			// masters got something new
+			// got some new masters
 			children, _, eventChan, err := m.conn.ChildrenW(common.ZK_MASTERS_ROOT)
 			if err != nil {
 				log.Error("Failed to watch master nodes.", zap.Error(err))
@@ -387,6 +387,7 @@ func (m *Server) Watch(stopChan <-chan struct{}) {
 				}
 				masters = append(masters, &node)
 			}
+			m.mastersWatch = eventChan
 		} else if chosen == len(selectCases)-1 {
 			// stop chan
 			return

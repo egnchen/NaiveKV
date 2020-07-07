@@ -3,7 +3,7 @@
 
 syntax = "proto3";
 package kv.proto;
-option go_package = "proto";
+option go_package = ".;proto";
 
 message Key {
   string key = 1;

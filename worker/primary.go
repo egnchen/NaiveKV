@@ -312,7 +312,7 @@ func (s *WorkerServer) Put(_ context.Context, pair *pb.KVPair) (*pb.PutResponse,
 		return &pb.PutResponse{Status: pb.Status_EINVVERSION}, nil
 	}
 	if s.mode != MODE_PRIMARY || s.readOnly {
-		return &pb.PutResponse{Status: pb.Status_ENOSERVER}, nil
+		return &pb.PutResponse{Status: pb.Status_EINVSERVER}, nil
 	}
 	log := common.SugaredLog()
 	version, err := s.kv.Put(pair.Key, pair.Value, 0)
@@ -335,6 +335,10 @@ func (s *WorkerServer) Get(_ context.Context, key *pb.Key) (*pb.GetResponse, err
 	if key.SlotVersion != s.SlotTableVersion.Load() {
 		return &pb.GetResponse{Status: pb.Status_EINVVERSION}, nil
 	}
+	if s.mode != MODE_PRIMARY {
+		return &pb.GetResponse{Status: pb.Status_EINVSERVER}, nil
+	}
+
 	value, err := s.kv.Get(key.Key, 0)
 	if err == nil {
 		return &pb.GetResponse{

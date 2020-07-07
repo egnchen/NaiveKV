@@ -110,7 +110,7 @@ func (s *WorkerServer) RegisterToZk(conn *zk.Conn, weight float32) error {
 	if err := common.ZkGet(s.conn, common.ZK_TABLE_VERSION, &version); err != nil {
 		return err
 	}
-	s.SlotTableVersion = version
+	s.SlotTableVersion.Store(version)
 	if s.mode == MODE_PRIMARY {
 		return s.registerPrimary(weight)
 	} else if s.mode == MODE_BACKUP {
@@ -151,7 +151,7 @@ func (s *WorkerServer) Watch() {
 func (s *WorkerServer) WatchMigration() {
 	log := common.SugaredLog()
 	for {
-		p := path.Join(common.ZK_MIGRATIONS_ROOT, strconv.Itoa(int(s.SlotTableVersion)))
+		p := path.Join(common.ZK_MIGRATIONS_ROOT, strconv.Itoa(int(s.SlotTableVersion.Load())))
 		// keep waiting until migration node shows up
 		for {
 			log.Info("Watching migration node...", zap.String("path", p))
@@ -179,7 +179,7 @@ func (s *WorkerServer) WatchMigration() {
 			}
 		} else {
 			// just commit it
-			s.SlotTableVersion += 1
+			s.SlotTableVersion.Inc()
 		}
 	}
 }
