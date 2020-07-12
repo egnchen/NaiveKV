@@ -1,6 +1,6 @@
 # NaiveKV
 
-This is a distributed key-value service implemented in Go.
+A distributed, persistent key-value store for you to toy around.
 
 ## Structure overview
 
@@ -18,8 +18,7 @@ Check out https://grpc.io/docs/languages/go/quickstart/ for detail.
 The gRPC stubs are precompiled & stored in `proto`. You can recompile your own with:
 
 ```bash
-cd proto
-protoc *.proto --go_out=plugins=grpc:.
+make proto
 ```
 
 ### Start processes
